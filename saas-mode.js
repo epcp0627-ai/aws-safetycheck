@@ -1,9 +1,24 @@
 (() => {
   const SERVICE_ACCOUNT_ID = '369503741621';
   const ROLE_TEMPLATE = './infra/customer-readonly-role.yaml';
+  const SERVICE_API_HOST = 'c6o05b2a9i.execute-api.us-east-1.amazonaws.com';
   const dlg = document.getElementById('awsDlg');
   const testBtn = document.getElementById('test');
   if (!dlg || !testBtn) return;
+
+  // live.js still contains the old token-era client. Keep its local validation satisfied,
+  // but strip the legacy header before requests reach the shared SaaS API.
+  const nativeFetch = window.fetch.bind(window);
+  window.fetch = (input, init = {}) => {
+    const url = typeof input === 'string' ? input : (input?.url || '');
+    if (url.includes(SERVICE_API_HOST)) {
+      const headers = new Headers(init.headers || {});
+      headers.delete('x-safetycheck-token');
+      headers.delete('X-SafetyCheck-Token');
+      init = { ...init, headers };
+    }
+    return nativeFetch(input, init);
+  };
 
   const token = document.getElementById('accessToken');
   if (token) {
