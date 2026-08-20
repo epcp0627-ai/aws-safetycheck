@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Enable live connector, report importer, and UI enhancements
+      - name: Enable live connector, report importer, SaaS onboarding, and UI enhancements
         run: |
           python - <<'PY'
           from pathlib import Path
@@ -30,6 +30,7 @@ jobs:
               '<script src="./ux.js"></script>',
               '<script src="./ui-polish.js"></script>',
               '<script src="./hero-polish.js"></script>',
+              '<script src="./saas-mode.js"></script>',
           ]
           for marker in markers:
               if marker not in text:
