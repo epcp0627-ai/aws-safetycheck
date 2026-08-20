@@ -5,6 +5,10 @@ Parameters:
   AllowedOrigin:
     Type: String
     Default: https://epcp0627-ai.github.io
+  TargetRegion:
+    Type: String
+    Default: ap-northeast-1
+    Description: AWS region to analyze (for HESEL Japan use ap-northeast-1)
   ApiAccessToken:
     Type: String
     NoEcho: true
@@ -69,11 +73,12 @@ Resources:
       Environment:
         Variables:
           SAFETYCHECK_API_TOKEN: !Ref ApiAccessToken
+          TARGET_REGION: !Ref TargetRegion
       Code:
         ZipFile: |
           import json, boto3, os, hmac
 
-          REGION = os.environ.get('AWS_REGION', 'ap-northeast-1')
+          REGION = os.environ.get('TARGET_REGION', 'ap-northeast-1')
           API_TOKEN = os.environ.get('SAFETYCHECK_API_TOKEN', '')
 
           def response(code, body):
