@@ -5,6 +5,25 @@ Parameters:
   AllowedOrigin:
     Type: String
     Default: https://epcp0627-ai.github.io
+  LogRetentionDays:
+    Type: Number
+    Default: 7
+    AllowedValues: [1, 3, 5, 7, 14, 30]
+  LambdaReservedConcurrency:
+    Type: Number
+    Default: 2
+    MinValue: 1
+    MaxValue: 10
+  ApiThrottleRate:
+    Type: Number
+    Default: 2
+    MinValue: 1
+    MaxValue: 20
+  ApiThrottleBurst:
+    Type: Number
+    Default: 5
+    MinValue: 1
+    MaxValue: 50
 
 Resources:
   SafetyCheckLambdaRole:
@@ -37,6 +56,7 @@ Resources:
       Role: !GetAtt SafetyCheckLambdaRole.Arn
       Timeout: 30
       MemorySize: 256
+      ReservedConcurrentExecutions: !Ref LambdaReservedConcurrency
       Code:
         ZipFile: |
           import json, boto3, os
@@ -143,6 +163,12 @@ Resources:
               except Exception as e:
                   return response(500, {'message': str(e)})
 
+  SafetyCheckLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/lambda/aws-safetycheck-api
+      RetentionInDays: !Ref LogRetentionDays
+
   SafetyCheckApi:
     Type: AWS::ApiGatewayV2::Api
     Properties:
@@ -179,6 +205,9 @@ Resources:
       ApiId: !Ref SafetyCheckApi
       StageName: $default
       AutoDeploy: true
+      DefaultRouteSettings:
+        ThrottlingRateLimit: !Ref ApiThrottleRate
+        ThrottlingBurstLimit: !Ref ApiThrottleBurst
 
   SafetyCheckInvokePermission:
     Type: AWS::Lambda::Permission
@@ -195,3 +224,6 @@ Outputs:
   ServiceAccountId:
     Description: Account ID to use in customer-readonly-role.yaml
     Value: !Ref AWS::AccountId
+  CostGuardrails:
+    Description: Enabled cost safety defaults
+    Value: !Sub 'Logs=${LogRetentionDays}d, LambdaConcurrency=${LambdaReservedConcurrency}, API=${ApiThrottleRate}rps burst=${ApiThrottleBurst}'
