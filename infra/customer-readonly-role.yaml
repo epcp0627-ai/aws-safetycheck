@@ -1,16 +1,34 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: AWS SafetyCheck least-privilege read-only role for impact analysis
+Description: AWS SafetyCheck customer-side least-privilege read-only role. Customers deploy only this stack.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: AWS SafetyCheck connection
+        Parameters:
+          - ExternalId
+          - SafetyCheckAccountId
+    ParameterLabels:
+      ExternalId:
+        default: External ID
+      SafetyCheckAccountId:
+        default: SafetyCheck service account ID
 
 Parameters:
   SafetyCheckAccountId:
     Type: String
+    Default: '369503741621'
     AllowedPattern: '^[0-9]{12}$'
-    Description: Account ID where the AWS SafetyCheck Lambda runs
+    Description: AWS account where the shared AWS SafetyCheck service runs. Keep the default unless the service operator tells you otherwise.
   ExternalId:
     Type: String
     NoEcho: true
-    MinLength: 16
-    Description: Unique value used only for STS AssumeRole
+    MinLength: 24
+    MaxLength: 128
+    AllowedPattern: '^[A-Za-z0-9+=,.@:_/-]+$'
+    ConstraintDescription: Use 24-128 characters containing letters, numbers, and +=,.@:_/- only.
+    Description: Unique random value for this customer account. Keep it private and enter the same value in AWS SafetyCheck.
 
 Resources:
   SafetyCheckReadOnlyRole:
@@ -18,6 +36,7 @@ Resources:
     Properties:
       RoleName: SafetyCheckReadOnlyRole
       MaxSessionDuration: 3600
+      Description: Read-only role assumed by the shared AWS SafetyCheck service for live impact analysis.
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -149,6 +168,9 @@ Resources:
 
 Outputs:
   RoleArn:
-    Description: Enter this ARN in AWS SafetyCheck
+    Description: Paste this value into AWS SafetyCheck.
     Value:
       Fn::GetAtt: [SafetyCheckReadOnlyRole, Arn]
+  ConnectionMode:
+    Description: Customer-side deployment mode
+    Value: SharedSafetyCheckSaaS
