@@ -24,6 +24,8 @@ jobs:
           markers = [
               '<script src="./live.js"></script>',
               '<script src="./report.js"></script>',
+              '<script src="./live-bridge.js"></script>',
+              '<script src="./live-account-fix.js"></script>',
               '<script src="./ux.js"></script>',
               '<script src="./ui-polish.js"></script>',
               '<script src="./hero-polish.js"></script>',
