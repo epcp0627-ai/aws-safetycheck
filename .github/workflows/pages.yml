@@ -26,6 +26,7 @@ jobs:
               '<script src="./report.js"></script>',
               '<script src="./ux.js"></script>',
               '<script src="./ui-polish.js"></script>',
+              '<script src="./hero-polish.js"></script>',
           ]
           for marker in markers:
               if marker not in text:
