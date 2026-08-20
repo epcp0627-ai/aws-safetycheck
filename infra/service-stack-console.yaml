@@ -5,6 +5,11 @@ Parameters:
   AllowedOrigin:
     Type: String
     Default: https://epcp0627-ai.github.io
+  ApiAccessToken:
+    Type: String
+    NoEcho: true
+    MinLength: 24
+    Description: Secret token required by the public API. Do not commit this value to GitHub.
   LogRetentionDays:
     Type: Number
     Default: 7
@@ -61,21 +66,29 @@ Resources:
       Timeout: 30
       MemorySize: 256
       ReservedConcurrentExecutions: !If [UseReservedConcurrency, !Ref LambdaReservedConcurrency, !Ref 'AWS::NoValue']
+      Environment:
+        Variables:
+          SAFETYCHECK_API_TOKEN: !Ref ApiAccessToken
       Code:
         ZipFile: |
-          import json, boto3, os
+          import json, boto3, os, hmac
 
           REGION = os.environ.get('AWS_REGION', 'ap-northeast-1')
+          API_TOKEN = os.environ.get('SAFETYCHECK_API_TOKEN', '')
 
           def response(code, body):
               return {
                   'statusCode': code,
                   'headers': {
-                      'content-type': 'application/json',
-                      'access-control-allow-origin': '*'
+                      'content-type': 'application/json'
                   },
                   'body': json.dumps(body, ensure_ascii=False, default=str)
               }
+
+          def authorized(event):
+              headers = event.get('headers') or {}
+              supplied = headers.get('x-safetycheck-token') or headers.get('X-SafetyCheck-Token') or ''
+              return bool(API_TOKEN) and hmac.compare_digest(str(supplied), API_TOKEN)
 
           def assume(role_arn, external_id=''):
               args = {
@@ -153,8 +166,8 @@ Resources:
               }
 
           def lambda_handler(event, context):
-              if event.get('requestContext', {}).get('http', {}).get('method') == 'OPTIONS':
-                  return response(204, {})
+              if not authorized(event):
+                  return response(401, {'message': 'unauthorized'})
               try:
                   payload = json.loads(event.get('body') or '{}')
                   creds = assume(payload['roleArn'], payload.get('externalId', ''))
@@ -183,6 +196,7 @@ Resources:
           - !Ref AllowedOrigin
         AllowHeaders:
           - content-type
+          - x-safetycheck-token
         AllowMethods:
           - POST
           - OPTIONS
@@ -231,3 +245,6 @@ Outputs:
   CostGuardrails:
     Description: Enabled cost safety defaults
     Value: !Sub 'Logs=${LogRetentionDays}d, LambdaReservedConcurrency=${LambdaReservedConcurrency} (0=disabled), API=${ApiThrottleRate}rps burst=${ApiThrottleBurst}'
+  SecurityGuardrail:
+    Description: Public API requires x-safetycheck-token
+    Value: TokenRequired
