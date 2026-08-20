@@ -1,0 +1,197 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: AWS SafetyCheck service API - deployable directly in CloudFormation console
+
+Parameters:
+  AllowedOrigin:
+    Type: String
+    Default: https://epcp0627-ai.github.io
+
+Resources:
+  SafetyCheckLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: AssumeSafetyCheckCustomerRole
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: sts:AssumeRole
+                Resource: arn:aws:iam::*:role/SafetyCheckReadOnlyRole
+
+  SafetyCheckFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: aws-safetycheck-api
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role: !GetAtt SafetyCheckLambdaRole.Arn
+      Timeout: 30
+      MemorySize: 256
+      Code:
+        ZipFile: |
+          import json, boto3, os
+
+          REGION = os.environ.get('AWS_REGION', 'ap-northeast-1')
+
+          def response(code, body):
+              return {
+                  'statusCode': code,
+                  'headers': {
+                      'content-type': 'application/json',
+                      'access-control-allow-origin': '*'
+                  },
+                  'body': json.dumps(body, ensure_ascii=False, default=str)
+              }
+
+          def assume(role_arn, external_id=''):
+              args = {
+                  'RoleArn': role_arn,
+                  'RoleSessionName': 'SafetyCheckReadOnly',
+                  'DurationSeconds': 900
+              }
+              if external_id:
+                  args['ExternalId'] = external_id
+              c = boto3.client('sts').assume_role(**args)['Credentials']
+              return {
+                  'aws_access_key_id': c['AccessKeyId'],
+                  'aws_secret_access_key': c['SecretAccessKey'],
+                  'aws_session_token': c['SessionToken'],
+                  'region_name': REGION
+              }
+
+          def clients(creds):
+              return {
+                  'securityhub': boto3.client('securityhub', **creds),
+                  'ec2': boto3.client('ec2', **creds)
+              }
+
+          def findings(c):
+              out = []
+              paginator = c['securityhub'].get_paginator('get_findings')
+              pages = paginator.paginate(
+                  Filters={
+                      'ComplianceStatus': [{'Value': 'FAILED', 'Comparison': 'EQUALS'}],
+                      'RecordState': [{'Value': 'ACTIVE', 'Comparison': 'EQUALS'}]
+                  },
+                  PaginationConfig={'MaxItems': 100}
+              )
+              for page in pages:
+                  for f in page.get('Findings', []):
+                      out.append({
+                          'id': f.get('Id'),
+                          'title': f.get('Title'),
+                          'severity': f.get('Severity', {}).get('Label'),
+                          'resources': [r.get('Id') for r in f.get('Resources', [])]
+                      })
+              return out
+
+          def ec2_2(c):
+              groups = []
+              for vpc in c['ec2'].describe_vpcs().get('Vpcs', []):
+                  sgs = c['ec2'].describe_security_groups(Filters=[
+                      {'Name': 'group-name', 'Values': ['default']},
+                      {'Name': 'vpc-id', 'Values': [vpc['VpcId']]}
+                  ]).get('SecurityGroups', [])
+                  for sg in sgs:
+                      enis = c['ec2'].describe_network_interfaces(Filters=[
+                          {'Name': 'group-id', 'Values': [sg['GroupId']]}
+                      ]).get('NetworkInterfaces', [])
+                      groups.append({
+                          'vpcId': vpc['VpcId'],
+                          'groupId': sg['GroupId'],
+                          'inboundRules': len(sg.get('IpPermissions', [])),
+                          'outboundRules': len(sg.get('IpPermissionsEgress', [])),
+                          'attachedNetworkInterfaces': [
+                              {
+                                  'id': e.get('NetworkInterfaceId'),
+                                  'type': e.get('InterfaceType'),
+                                  'description': e.get('Description'),
+                                  'status': e.get('Status')
+                              } for e in enis
+                          ]
+                      })
+              attached = sum(len(g['attachedNetworkInterfaces']) for g in groups)
+              return {
+                  'controlId': 'EC2.2',
+                  'riskScore': min(95, 55 + attached * 8) if attached else 20,
+                  'recommendation': 'REVIEW' if attached else 'SAFE_CANDIDATE',
+                  'defaultSecurityGroups': groups
+              }
+
+          def lambda_handler(event, context):
+              if event.get('requestContext', {}).get('http', {}).get('method') == 'OPTIONS':
+                  return response(204, {})
+              try:
+                  payload = json.loads(event.get('body') or '{}')
+                  creds = assume(payload['roleArn'], payload.get('externalId', ''))
+                  c = clients(creds)
+                  if payload.get('action') == 'ec2.2-impact':
+                      return response(200, ec2_2(c))
+                  return response(200, {'findings': findings(c)})
+              except KeyError as e:
+                  return response(400, {'message': 'missing field: %s' % e})
+              except Exception as e:
+                  return response(500, {'message': str(e)})
+
+  SafetyCheckApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: aws-safetycheck-api
+      ProtocolType: HTTP
+      CorsConfiguration:
+        AllowOrigins:
+          - !Ref AllowedOrigin
+        AllowHeaders:
+          - content-type
+        AllowMethods:
+          - POST
+          - OPTIONS
+        MaxAge: 600
+
+  SafetyCheckIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref SafetyCheckApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt SafetyCheckFunction.Arn
+      PayloadFormatVersion: '2.0'
+
+  SafetyCheckRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref SafetyCheckApi
+      RouteKey: POST /analyze
+      Target: !Sub integrations/${SafetyCheckIntegration}
+
+  SafetyCheckStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref SafetyCheckApi
+      StageName: $default
+      AutoDeploy: true
+
+  SafetyCheckInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref SafetyCheckFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${SafetyCheckApi}/*/*/analyze
+
+Outputs:
+  ApiUrl:
+    Description: SafetyCheck API endpoint
+    Value: !Sub https://${SafetyCheckApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/analyze
+  ServiceAccountId:
+    Description: Account ID to use in customer-readonly-role.yaml
+    Value: !Ref AWS::AccountId
