@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: AWS SafetyCheck service API - deployable directly in CloudFormation console
+Description: AWS SafetyCheck service API - live read-only CIS impact analysis
 
 Parameters:
   AllowedOrigin:
@@ -8,12 +8,12 @@ Parameters:
   TargetRegion:
     Type: String
     Default: ap-northeast-1
-    Description: AWS region to analyze (for HESEL Japan use ap-northeast-1)
+    Description: AWS region to analyze
   ApiAccessToken:
     Type: String
     NoEcho: true
     MinLength: 24
-    Description: Secret token required by the public API. Do not commit this value to GitHub.
+    Description: Secret token required by the public API
   LogRetentionDays:
     Type: Number
     Default: 7
@@ -23,7 +23,7 @@ Parameters:
     Default: 0
     MinValue: 0
     MaxValue: 10
-    Description: 0 disables reserved concurrency. Keep 0 for low-quota/new accounts.
+    Description: 0 disables reserved concurrency
   ApiThrottleRate:
     Type: Number
     Default: 2
@@ -76,114 +76,97 @@ Resources:
           TARGET_REGION: !Ref TargetRegion
       Code:
         ZipFile: |
-          import json, boto3, os, hmac
-
-          REGION = os.environ.get('TARGET_REGION', 'ap-northeast-1')
-          API_TOKEN = os.environ.get('SAFETYCHECK_API_TOKEN', '')
-
-          def response(code, body):
-              return {
-                  'statusCode': code,
-                  'headers': {
-                      'content-type': 'application/json'
-                  },
-                  'body': json.dumps(body, ensure_ascii=False, default=str)
-              }
-
-          def authorized(event):
-              headers = event.get('headers') or {}
-              supplied = headers.get('x-safetycheck-token') or headers.get('X-SafetyCheck-Token') or ''
-              return bool(API_TOKEN) and hmac.compare_digest(str(supplied), API_TOKEN)
-
-          def assume(role_arn, external_id=''):
-              args = {
-                  'RoleArn': role_arn,
-                  'RoleSessionName': 'SafetyCheckReadOnly',
-                  'DurationSeconds': 900
-              }
-              if external_id:
-                  args['ExternalId'] = external_id
-              c = boto3.client('sts').assume_role(**args)['Credentials']
-              return {
-                  'aws_access_key_id': c['AccessKeyId'],
-                  'aws_secret_access_key': c['SecretAccessKey'],
-                  'aws_session_token': c['SessionToken'],
-                  'region_name': REGION
-              }
-
-          def clients(creds):
-              return {
-                  'securityhub': boto3.client('securityhub', **creds),
-                  'ec2': boto3.client('ec2', **creds)
-              }
-
-          def findings(c):
-              out = []
-              paginator = c['securityhub'].get_paginator('get_findings')
-              pages = paginator.paginate(
-                  Filters={
-                      'ComplianceStatus': [{'Value': 'FAILED', 'Comparison': 'EQUALS'}],
-                      'RecordState': [{'Value': 'ACTIVE', 'Comparison': 'EQUALS'}]
-                  },
-                  PaginationConfig={'MaxItems': 100}
-              )
-              for page in pages:
-                  for f in page.get('Findings', []):
-                      out.append({
-                          'id': f.get('Id'),
-                          'title': f.get('Title'),
-                          'severity': f.get('Severity', {}).get('Label'),
-                          'resources': [r.get('Id') for r in f.get('Resources', [])]
-                      })
+          import json,boto3,os,hmac,datetime
+          REGION=os.environ.get('TARGET_REGION','ap-northeast-1')
+          TOKEN=os.environ.get('SAFETYCHECK_API_TOKEN','')
+          def resp(c,b): return {'statusCode':c,'headers':{'content-type':'application/json'},'body':json.dumps(b,ensure_ascii=False,default=str)}
+          def auth(e):
+              h=e.get('headers') or {}; v=h.get('x-safetycheck-token') or h.get('X-SafetyCheck-Token') or ''
+              return bool(TOKEN) and hmac.compare_digest(str(v),TOKEN)
+          def assume(a,x=''):
+              q={'RoleArn':a,'RoleSessionName':'SafetyCheckReadOnly','DurationSeconds':900}
+              if x:q['ExternalId']=x
+              c=boto3.client('sts').assume_role(**q)['Credentials']
+              return {'aws_access_key_id':c['AccessKeyId'],'aws_secret_access_key':c['SecretAccessKey'],'aws_session_token':c['SessionToken'],'region_name':REGION}
+          def cli(n,c,r=None):
+              q=dict(c)
+              if r:q['region_name']=r
+              return boto3.client(n,**q)
+          def safe(f,d=None):
+              try:return f(),None
+              except Exception as e:return d,str(e)
+          def ssl_deny(p):
+              try:p=json.loads(p)
+              except:return False
+              s=p.get('Statement',[]); s=s if isinstance(s,list) else [s]
+              for z in s:
+                  if str(z.get('Effect','')).lower()!='deny':continue
+                  c=z.get('Condition',{})
+                  for op in ('Bool','StringEquals'):
+                      if str((c.get(op) or {}).get('aws:SecureTransport','')).lower()=='false':return True
+              return False
+          def snapshot(c):
+              out={'region':REGION,'errors':{}}
+              ident,_=safe(lambda:cli('sts',c).get_caller_identity(),{}); aid=(ident or {}).get('Account'); out['account']=aid
+              ec2=cli('ec2',c); ed={'defaultSecurityGroups':[],'adminOpen':[],'vpcsWithoutFlowLogs':[],'unencryptedVolumes':[]}
+              vpcs,_=safe(lambda:ec2.describe_vpcs().get('Vpcs',[]),[]); sgs,_=safe(lambda:ec2.describe_security_groups().get('SecurityGroups',[]),[]); ed['vpcCount']=len(vpcs or [])
+              cache={}
+              def enis(g):
+                  if g not in cache: cache[g]=(safe(lambda:ec2.describe_network_interfaces(Filters=[{'Name':'group-id','Values':[g]}]).get('NetworkInterfaces',[]),[])[0] or [])
+                  return cache[g]
+              for sg in sgs or []:
+                  gid=sg.get('GroupId')
+                  if sg.get('GroupName')=='default':
+                      en=enis(gid); ed['defaultSecurityGroups'].append({'groupId':gid,'vpcId':sg.get('VpcId'),'ruleCount':len(sg.get('IpPermissions',[]))+len(sg.get('IpPermissionsEgress',[])),'enis':[{'id':x.get('NetworkInterfaceId'),'type':x.get('InterfaceType'),'description':x.get('Description')} for x in en[:10]]})
+                  ports=[]
+                  for p in sg.get('IpPermissions',[]):
+                      pub=any(x.get('CidrIp')=='0.0.0.0/0' for x in p.get('IpRanges',[])) or any(x.get('CidrIpv6')=='::/0' for x in p.get('Ipv6Ranges',[]))
+                      if not pub:continue
+                      if p.get('IpProtocol')=='-1':ports += [22,3389]
+                      elif p.get('FromPort') is not None:ports += [z for z in (22,3389) if p['FromPort']<=z<=p['ToPort']]
+                  ports=sorted(set(ports))
+                  if ports:ed['adminOpen'].append({'groupId':gid,'name':sg.get('GroupName'),'ports':ports,'eniCount':len(enis(gid))})
+              fl,_=safe(lambda:ec2.describe_flow_logs().get('FlowLogs',[]),[]); active={x.get('ResourceId') for x in fl or [] if x.get('FlowLogStatus')=='ACTIVE'}; ed['vpcsWithoutFlowLogs']=[v.get('VpcId') for v in vpcs or [] if v.get('VpcId') not in active]
+              ed['ebsEncryptionDefault']=safe(lambda:ec2.get_ebs_encryption_by_default().get('EbsEncryptionByDefault'),None)[0]
+              vols,_=safe(lambda:ec2.describe_volumes().get('Volumes',[]),[]); ed['unencryptedVolumes']=[{'id':v.get('VolumeId'),'size':v.get('Size')} for v in vols or [] if not v.get('Encrypted')][:30]; out['ec2']=ed
+              rds=cli('rds',c); dbs,_=safe(lambda:rds.describe_db_instances().get('DBInstances',[]),[]); out['rds']={'instances':[{'id':d.get('DBInstanceIdentifier'),'class':d.get('DBInstanceClass'),'engine':d.get('Engine'),'version':d.get('EngineVersion'),'storage':d.get('AllocatedStorage'),'multiAZ':d.get('MultiAZ'),'autoMinor':d.get('AutoMinorVersionUpgrade'),'publiclyAccessible':d.get('PubliclyAccessible'),'encrypted':d.get('StorageEncrypted')} for d in dbs or []]}
+              s3=cli('s3',c); ct=cli('cloudtrail',c); trails,_=safe(lambda:ct.describe_trails(includeShadowTrails=False).get('trailList',[]),[]); tl=[]
+              for t in trails or []:
+                  st,_=safe(lambda a=t.get('TrailARN'):ct.get_trail_status(Name=a),{}); b=t.get('S3BucketName'); lg={}
+                  if b:lg=safe(lambda b=b:s3.get_bucket_logging(Bucket=b),{})[0] or {}
+                  tl.append({'name':t.get('Name'),'kmsKeyId':t.get('KmsKeyId'),'cloudWatchLogs':bool(t.get('CloudWatchLogsLogGroupArn')),'s3Bucket':b,'s3AccessLogging':bool(lg.get('LoggingEnabled')) if b else None,'logFileValidation':bool(t.get('LogFileValidationEnabled')),'isLogging':bool((st or {}).get('IsLogging'))})
+              out['cloudtrail']={'trails':tl}
+              buckets,_=safe(lambda:s3.list_buckets().get('Buckets',[]),[]); bl=[]
+              for b in (buckets or [])[:40]:
+                  n=b.get('Name'); pol,_=safe(lambda n=n:s3.get_bucket_policy(Bucket=n),{}); ps,_=safe(lambda n=n:s3.get_bucket_policy_status(Bucket=n),{}); bp,_=safe(lambda n=n:s3.get_bucket_public_access_block(Bucket=n),{})
+                  bl.append({'name':n,'sslEnforced':ssl_deny((pol or {}).get('Policy','')),'public':((ps or {}).get('PolicyStatus') or {}).get('IsPublic'),'bpa':(bp or {}).get('PublicAccessBlockConfiguration',{})})
+              ab={}
+              if aid:
+                  ab=safe(lambda:cli('s3control',c).get_public_access_block(AccountId=aid),{})[0] or {}
+              out['s3']={'buckets':bl,'accountBpa':ab.get('PublicAccessBlockConfiguration',{}),'truncated':len(buckets or [])>40}
+              iam=cli('iam',c); sm,_=safe(lambda:iam.get_account_summary().get('SummaryMap',{}),{}); users,_=safe(lambda:iam.list_users().get('Users',[]),[]); old=[]; now=datetime.datetime.now(datetime.timezone.utc)
+              for u in (users or [])[:100]:
+                  keys,_=safe(lambda n=u['UserName']:iam.list_access_keys(UserName=n).get('AccessKeyMetadata',[]),[])
+                  for k in keys or []:
+                      age=(now-k['CreateDate']).days
+                      if age>90:old.append({'user':u['UserName'],'last4':k['AccessKeyId'][-4:],'ageDays':age,'status':k.get('Status')})
+              ans,_=safe(lambda:cli('accessanalyzer',c).list_analyzers().get('analyzers',[]),[]); out['iam']={'accountMfa':bool((sm or {}).get('AccountMFAEnabled')),'rootAccessKeys':bool((sm or {}).get('AccountAccessKeysPresent')),'userCount':len(users or []),'oldAccessKeys':old[:40],'analyzers':[{'name':a.get('name'),'type':a.get('type'),'status':a.get('status')} for a in ans or []]}
+              ac,_=safe(lambda:cli('account',c,'us-east-1').get_alternate_contact(AlternateContactType='SECURITY'),{}); out['accountData']={'securityContact':bool((ac or {}).get('AlternateContact'))}
               return out
-
-          def ec2_2(c):
-              groups = []
-              for vpc in c['ec2'].describe_vpcs().get('Vpcs', []):
-                  sgs = c['ec2'].describe_security_groups(Filters=[
-                      {'Name': 'group-name', 'Values': ['default']},
-                      {'Name': 'vpc-id', 'Values': [vpc['VpcId']]}
-                  ]).get('SecurityGroups', [])
-                  for sg in sgs:
-                      enis = c['ec2'].describe_network_interfaces(Filters=[
-                          {'Name': 'group-id', 'Values': [sg['GroupId']]}
-                      ]).get('NetworkInterfaces', [])
-                      groups.append({
-                          'vpcId': vpc['VpcId'],
-                          'groupId': sg['GroupId'],
-                          'inboundRules': len(sg.get('IpPermissions', [])),
-                          'outboundRules': len(sg.get('IpPermissionsEgress', [])),
-                          'attachedNetworkInterfaces': [
-                              {
-                                  'id': e.get('NetworkInterfaceId'),
-                                  'type': e.get('InterfaceType'),
-                                  'description': e.get('Description'),
-                                  'status': e.get('Status')
-                              } for e in enis
-                          ]
-                      })
-              attached = sum(len(g['attachedNetworkInterfaces']) for g in groups)
-              return {
-                  'controlId': 'EC2.2',
-                  'riskScore': min(95, 55 + attached * 8) if attached else 20,
-                  'recommendation': 'REVIEW' if attached else 'SAFE_CANDIDATE',
-                  'defaultSecurityGroups': groups
-              }
-
-          def lambda_handler(event, context):
-              if not authorized(event):
-                  return response(401, {'message': 'unauthorized'})
+          def findings(c):
+              sh=cli('securityhub',c); out=[]
+              pg=sh.get_paginator('get_findings').paginate(Filters={'ComplianceStatus':[{'Value':'FAILED','Comparison':'EQUALS'}],'RecordState':[{'Value':'ACTIVE','Comparison':'EQUALS'}]},PaginationConfig={'MaxItems':100})
+              for p in pg:
+                  for f in p.get('Findings',[]):out.append({'id':f.get('Id'),'title':f.get('Title'),'severity':f.get('Severity',{}).get('Label'),'resources':[r.get('Id') for r in f.get('Resources',[])]})
+              return out
+          def lambda_handler(event,context):
+              if not auth(event):return resp(401,{'message':'unauthorized'})
               try:
-                  payload = json.loads(event.get('body') or '{}')
-                  creds = assume(payload['roleArn'], payload.get('externalId', ''))
-                  c = clients(creds)
-                  if payload.get('action') == 'ec2.2-impact':
-                      return response(200, ec2_2(c))
-                  return response(200, {'findings': findings(c)})
-              except KeyError as e:
-                  return response(400, {'message': 'missing field: %s' % e})
-              except Exception as e:
-                  return response(500, {'message': str(e)})
+                  p=json.loads(event.get('body') or '{}'); c=assume(p['roleArn'],p.get('externalId',''))
+                  if p.get('action')=='snapshot':return resp(200,snapshot(c))
+                  return resp(200,{'findings':findings(c)})
+              except KeyError as e:return resp(400,{'message':'missing field: %s'%e})
+              except Exception as e:return resp(500,{'message':str(e)})
 
   SafetyCheckLogGroup:
     Type: AWS::Logs::LogGroup
