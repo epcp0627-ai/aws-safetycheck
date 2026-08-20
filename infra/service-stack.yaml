@@ -1,0 +1,56 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: AWS SafetyCheck service API (read-only MVP)
+
+Parameters:
+  AllowedOrigin:
+    Type: String
+    Default: https://epcp0627-ai.github.io
+
+Resources:
+  SafetyCheckApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      CorsConfiguration:
+        AllowOrigins:
+          - !Ref AllowedOrigin
+        AllowHeaders:
+          - content-type
+        AllowMethods:
+          - POST
+          - OPTIONS
+        MaxAge: 600
+
+  SafetyCheckFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: aws-safetycheck-api
+      Runtime: python3.12
+      Handler: handler.lambda_handler
+      CodeUri: ../backend/
+      MemorySize: 256
+      Timeout: 30
+      Environment:
+        Variables:
+          APP_ENV: mvp
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - sts:AssumeRole
+              Resource: arn:aws:iam::*:role/SafetyCheckReadOnlyRole
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref SafetyCheckApi
+            Path: /analyze
+            Method: POST
+
+Outputs:
+  ApiUrl:
+    Description: POST endpoint for the SafetyCheck frontend
+    Value: !Sub https://${SafetyCheckApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/analyze
+  ServiceAccountId:
+    Description: AWS account ID to enter when creating the customer read-only role
+    Value: !Ref AWS::AccountId
