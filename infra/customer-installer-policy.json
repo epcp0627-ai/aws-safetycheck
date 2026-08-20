@@ -20,11 +20,14 @@
       "Resource": "arn:aws:cloudformation:*:*:stack/aws-safetycheck-readonly/*"
     },
     {
-      "Sid": "SafetyCheckTemplateValidation",
+      "Sid": "SafetyCheckCloudFormationConsoleRead",
       "Effect": "Allow",
       "Action": [
         "cloudformation:ValidateTemplate",
-        "cloudformation:GetTemplateSummary"
+        "cloudformation:GetTemplateSummary",
+        "cloudformation:ListStacks",
+        "cloudformation:ListChangeSets",
+        "cloudformation:DescribeAccountLimits"
       ],
       "Resource": "*"
     },
