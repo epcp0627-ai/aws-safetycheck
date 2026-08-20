@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Enable live AWS connector, CIS report importer, and UX enhancements
+      - name: Enable live connector, report importer, and UI enhancements
         run: |
           python - <<'PY'
           from pathlib import Path
@@ -25,6 +25,7 @@ jobs:
               '<script src="./live.js"></script>',
               '<script src="./report.js"></script>',
               '<script src="./ux.js"></script>',
+              '<script src="./ui-polish.js"></script>',
           ]
           for marker in markers:
               if marker not in text:
