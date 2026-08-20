@@ -1,0 +1,34 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: AWS SafetyCheck read-only cross-account role (MVP)
+Parameters:
+  SafetyCheckAccountId:
+    Type: String
+  ExternalId:
+    Type: String
+    NoEcho: true
+    MinLength: 12
+Resources:
+  SafetyCheckReadOnlyRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: SafetyCheckReadOnlyRole
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS:
+                Fn::Sub: arn:aws:iam::${SafetyCheckAccountId}:root
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                sts:ExternalId:
+                  Ref: ExternalId
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/SecurityAudit
+        - arn:aws:iam::aws:policy/ReadOnlyAccess
+Outputs:
+  RoleArn:
+    Value:
+      Fn::GetAtt: [SafetyCheckReadOnlyRole, Arn]
