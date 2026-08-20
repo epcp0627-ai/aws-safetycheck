@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: AWS SafetyCheck customer-side least-privilege read-only role. Customers deploy only this stack.
+Description: AWS SafetyCheck customer-side read-only metadata role. Customers deploy only this stack.
 
 Metadata:
   AWS::CloudFormation::Interface:
@@ -36,7 +36,7 @@ Resources:
     Properties:
       RoleName: SafetyCheckReadOnlyRole
       MaxSessionDuration: 3600
-      Description: Read-only role assumed by the shared AWS SafetyCheck service for live impact analysis.
+      Description: Read-only metadata role assumed by the shared AWS SafetyCheck service for live impact and architecture analysis.
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -50,7 +50,7 @@ Resources:
                 sts:ExternalId:
                   Ref: ExternalId
       Policies:
-        - PolicyName: SafetyCheckLeastPrivilegeReadOnly
+        - PolicyName: SafetyCheckReadOnlyMetadata
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
@@ -63,14 +63,24 @@ Resources:
                   - securityhub:GetEnabledStandards
                   - securityhub:ListSecurityControlDefinitions
                 Resource: '*'
-              - Sid: EC2NetworkAndStorageRead
+              - Sid: EC2ArchitectureRead
                 Effect: Allow
                 Action:
+                  - ec2:DescribeAvailabilityZones
                   - ec2:DescribeVpcs
                   - ec2:DescribeSubnets
+                  - ec2:DescribeRouteTables
+                  - ec2:DescribeInternetGateways
+                  - ec2:DescribeNatGateways
+                  - ec2:DescribeVpcEndpoints
+                  - ec2:DescribeVpcPeeringConnections
+                  - ec2:DescribeTransitGateways
+                  - ec2:DescribeTransitGatewayAttachments
+                  - ec2:DescribeNetworkAcls
                   - ec2:DescribeSecurityGroups
                   - ec2:DescribeNetworkInterfaces
                   - ec2:DescribeInstances
+                  - ec2:DescribeLaunchTemplates
                   - ec2:DescribeLaunchTemplateVersions
                   - ec2:DescribeFlowLogs
                   - ec2:DescribeVolumes
@@ -79,15 +89,32 @@ Resources:
                   - ec2:DescribeAddresses
                   - ec2:GetEbsEncryptionByDefault
                 Resource: '*'
-              - Sid: RDSRead
+              - Sid: LoadBalancerAndAutoScalingRead
+                Effect: Allow
+                Action:
+                  - autoscaling:DescribeAutoScalingGroups
+                  - autoscaling:DescribeLaunchConfigurations
+                  - elasticloadbalancing:DescribeLoadBalancers
+                  - elasticloadbalancing:DescribeTargetGroups
+                  - elasticloadbalancing:DescribeTargetHealth
+                  - elasticloadbalancing:DescribeListeners
+                  - elasticloadbalancing:DescribeRules
+                Resource: '*'
+              - Sid: DatabaseRead
                 Effect: Allow
                 Action:
                   - rds:DescribeDBInstances
                   - rds:DescribeDBClusters
                   - rds:DescribeDBSubnetGroups
                   - rds:DescribeDBSnapshots
+                  - elasticache:DescribeCacheClusters
+                  - elasticache:DescribeReplicationGroups
+                  - elasticache:DescribeCacheSubnetGroups
+                  - dynamodb:ListTables
+                  - dynamodb:DescribeTable
+                  - redshift:DescribeClusters
                 Resource: '*'
-              - Sid: S3ConfigurationRead
+              - Sid: StorageRead
                 Effect: Allow
                 Action:
                   - s3:ListAllMyBuckets
@@ -99,11 +126,49 @@ Resources:
                   - s3:GetBucketLogging
                   - s3:GetBucketVersioning
                   - s3:GetLifecycleConfiguration
+                  - s3control:GetPublicAccessBlock
+                  - elasticfilesystem:DescribeFileSystems
+                  - elasticfilesystem:DescribeMountTargets
                 Resource: '*'
-              - Sid: S3AccountPublicAccessRead
+              - Sid: EdgeAndDnsRead
                 Effect: Allow
                 Action:
-                  - s3control:GetPublicAccessBlock
+                  - cloudfront:ListDistributions
+                  - cloudfront:GetDistribution
+                  - cloudfront:GetDistributionConfig
+                  - route53:ListHostedZones
+                  - route53:GetHostedZone
+                  - route53:ListResourceRecordSets
+                  - wafv2:ListWebACLs
+                  - wafv2:GetWebACL
+                  - wafv2:ListResourcesForWebACL
+                  - acm:ListCertificates
+                  - acm:DescribeCertificate
+                Resource: '*'
+              - Sid: ServerlessAndContainersRead
+                Effect: Allow
+                Action:
+                  - lambda:ListFunctions
+                  - lambda:GetFunctionConfiguration
+                  - apigateway:GET
+                  - ecs:ListClusters
+                  - ecs:DescribeClusters
+                  - ecs:ListServices
+                  - ecs:DescribeServices
+                  - ecs:ListTasks
+                  - ecs:DescribeTasks
+                  - eks:ListClusters
+                  - eks:DescribeCluster
+                Resource: '*'
+              - Sid: MessagingRead
+                Effect: Allow
+                Action:
+                  - sns:ListTopics
+                  - sns:GetTopicAttributes
+                  - sqs:ListQueues
+                  - sqs:GetQueueAttributes
+                  - events:ListRules
+                  - events:ListTargetsByRule
                 Resource: '*'
               - Sid: CloudTrailAndCloudWatchRead
                 Effect: Allow
@@ -116,7 +181,7 @@ Resources:
                   - cloudwatch:GetMetricData
                   - cloudwatch:GetMetricStatistics
                 Resource: '*'
-              - Sid: IAMRead
+              - Sid: IAMMetadataRead
                 Effect: Allow
                 Action:
                   - iam:GetAccountSummary
@@ -125,35 +190,16 @@ Resources:
                   - iam:ListAccessKeys
                   - iam:GetAccessKeyLastUsed
                 Resource: '*'
-              - Sid: AccessAnalyzerRead
+              - Sid: SecurityMetadataRead
                 Effect: Allow
                 Action:
                   - access-analyzer:ListAnalyzers
-                Resource: '*'
-              - Sid: AccountContactRead
-                Effect: Allow
-                Action:
                   - account:GetAlternateContact
-                Resource: '*'
-              - Sid: KMSRead
-                Effect: Allow
-                Action:
                   - kms:ListKeys
                   - kms:ListAliases
                   - kms:DescribeKey
                 Resource: '*'
-              - Sid: AutoScalingAndELBRead
-                Effect: Allow
-                Action:
-                  - autoscaling:DescribeAutoScalingGroups
-                  - autoscaling:DescribeLaunchConfigurations
-                  - elasticloadbalancing:DescribeLoadBalancers
-                  - elasticloadbalancing:DescribeTargetGroups
-                  - elasticloadbalancing:DescribeTargetHealth
-                  - elasticloadbalancing:DescribeListeners
-                  - elasticloadbalancing:DescribeRules
-                Resource: '*'
-              - Sid: TaggingRead
+              - Sid: ResourceInventoryRead
                 Effect: Allow
                 Action:
                   - tag:GetResources
@@ -174,3 +220,6 @@ Outputs:
   ConnectionMode:
     Description: Customer-side deployment mode
     Value: SharedSafetyCheckSaaS
+  PermissionScope:
+    Description: Permission model
+    Value: ReadOnlyMetadata-NoCreateUpdateDeleteActions
