@@ -110,6 +110,10 @@ Resources:
           def safe(f,d=None):
               try:return f(),None
               except Exception as e:return d,str(e)
+          def name_tag(tags):
+              for t in tags or []:
+                  if t.get('Key')=='Name':return t.get('Value')
+              return ''
           def ssl_deny(p):
               try:p=json.loads(p)
               except:return False
@@ -120,6 +124,56 @@ Resources:
                   for op in ('Bool','StringEquals'):
                       if str((c.get(op) or {}).get('aws:SecureTransport','')).lower()=='false':return True
               return False
+          def architecture(c,base):
+              a={'coverage':'architecture-metadata-v1','region':REGION,'errors':{},'inventory':{}}
+              ec2=cli('ec2',c)
+              vpcs,e=safe(lambda:ec2.describe_vpcs().get('Vpcs',[]),[]);a['errors']['vpcs']=e if e else None
+              subs,e=safe(lambda:ec2.describe_subnets().get('Subnets',[]),[]);a['errors']['subnets']=e if e else None
+              inst,e=safe(lambda:[i for r in ec2.describe_instances().get('Reservations',[]) for i in r.get('Instances',[])],[]);a['errors']['instances']=e if e else None
+              igws,_=safe(lambda:ec2.describe_internet_gateways().get('InternetGateways',[]),[])
+              nats,_=safe(lambda:ec2.describe_nat_gateways().get('NatGateways',[]),[])
+              a['vpcs']=[{'id':v.get('VpcId'),'cidr':v.get('CidrBlock'),'name':name_tag(v.get('Tags')),'default':v.get('IsDefault')} for v in vpcs or []]
+              a['subnets']=[{'id':s.get('SubnetId'),'vpcId':s.get('VpcId'),'cidr':s.get('CidrBlock'),'az':s.get('AvailabilityZone'),'name':name_tag(s.get('Tags')),'publicIpOnLaunch':s.get('MapPublicIpOnLaunch')} for s in subs or []]
+              a['instances']=[{'id':i.get('InstanceId'),'name':name_tag(i.get('Tags')),'type':i.get('InstanceType'),'state':(i.get('State') or {}).get('Name'),'vpcId':i.get('VpcId'),'subnetId':i.get('SubnetId'),'privateIp':i.get('PrivateIpAddress'),'publicIp':i.get('PublicIpAddress'),'securityGroups':[x.get('GroupId') for x in i.get('SecurityGroups',[])]} for i in (inst or [])[:100]]
+              a['internetGateways']=[{'id':g.get('InternetGatewayId'),'vpcIds':[x.get('VpcId') for x in g.get('Attachments',[]) if x.get('State')=='available']} for g in igws or []]
+              a['natGateways']=[{'id':n.get('NatGatewayId'),'vpcId':n.get('VpcId'),'subnetId':n.get('SubnetId'),'state':n.get('State'),'publicIps':[x.get('PublicIp') for x in n.get('NatGatewayAddresses',[]) if x.get('PublicIp')]} for n in (nats or [])[:50]]
+              elb=cli('elbv2',c);lbs,_=safe(lambda:elb.describe_load_balancers().get('LoadBalancers',[]),[]);tgs,_=safe(lambda:elb.describe_target_groups().get('TargetGroups',[]),[])
+              tgout=[]
+              for t in (tgs or [])[:50]:
+                  th,_=safe(lambda arn=t.get('TargetGroupArn'):elb.describe_target_health(TargetGroupArn=arn).get('TargetHealthDescriptions',[]),[])
+                  tgout.append({'arn':t.get('TargetGroupArn'),'name':t.get('TargetGroupName'),'vpcId':t.get('VpcId'),'protocol':t.get('Protocol'),'port':t.get('Port'),'targetType':t.get('TargetType'),'loadBalancerArns':t.get('LoadBalancerArns',[]),'targets':[{'id':x.get('Target',{}).get('Id'),'port':x.get('Target',{}).get('Port'),'state':x.get('TargetHealth',{}).get('State')} for x in th or []]})
+              a['loadBalancers']=[{'arn':l.get('LoadBalancerArn'),'name':l.get('LoadBalancerName'),'type':l.get('Type'),'scheme':l.get('Scheme'),'vpcId':l.get('VpcId'),'dns':l.get('DNSName'),'subnetIds':[z.get('SubnetId') for z in (l.get('AvailabilityZones') or [])],'securityGroups':l.get('SecurityGroups',[])} for l in (lbs or [])[:50]]
+              a['targetGroups']=tgout
+              asc=cli('autoscaling',c);ags,_=safe(lambda:asc.describe_auto_scaling_groups().get('AutoScalingGroups',[]),[])
+              a['autoScalingGroups']=[{'name':g.get('AutoScalingGroupName'),'min':g.get('MinSize'),'max':g.get('MaxSize'),'desired':g.get('DesiredCapacity'),'instanceIds':[x.get('InstanceId') for x in g.get('Instances',[])],'targetGroupArns':g.get('TargetGroupARNs',[])} for g in (ags or [])[:50]]
+              rds=cli('rds',c);dbs,_=safe(lambda:rds.describe_db_instances().get('DBInstances',[]),[])
+              a['rds']=[{'id':d.get('DBInstanceIdentifier'),'engine':d.get('Engine'),'class':d.get('DBInstanceClass'),'multiAZ':d.get('MultiAZ'),'vpcId':(d.get('DBSubnetGroup') or {}).get('VpcId'),'subnetIds':[x.get('SubnetIdentifier') for x in ((d.get('DBSubnetGroup') or {}).get('Subnets') or [])],'securityGroups':[x.get('VpcSecurityGroupId') for x in d.get('VpcSecurityGroups',[])],'endpoint':(d.get('Endpoint') or {}).get('Address')} for d in (dbs or [])[:50]]
+              s3=base.get('s3',{});a['s3']=[{'name':b.get('name'),'public':b.get('public')} for b in (s3.get('buckets') or [])]
+              cf=cli('cloudfront',c,'us-east-1');dists,_=safe(lambda:((cf.list_distributions(MaxItems='100').get('DistributionList') or {}).get('Items') or []),[])
+              a['cloudfront']=[{'id':d.get('Id'),'domain':d.get('DomainName'),'enabled':d.get('Enabled'),'webAclId':d.get('WebACLId'),'origins':[{'id':o.get('Id'),'domain':o.get('DomainName')} for o in ((d.get('Origins') or {}).get('Items') or [])]} for d in dists or []]
+              r53=cli('route53',c,'us-east-1');zones,_=safe(lambda:r53.list_hosted_zones().get('HostedZones',[]),[]);a['route53']=[{'id':z.get('Id'),'name':z.get('Name'),'private':(z.get('Config') or {}).get('PrivateZone')} for z in (zones or [])[:100]]
+              lam=cli('lambda',c);funcs,_=safe(lambda:lam.list_functions(MaxItems=100).get('Functions',[]),[]);a['lambda']=[{'name':f.get('FunctionName'),'runtime':f.get('Runtime'),'vpcId':(f.get('VpcConfig') or {}).get('VpcId'),'subnetIds':(f.get('VpcConfig') or {}).get('SubnetIds',[]),'securityGroups':(f.get('VpcConfig') or {}).get('SecurityGroupIds',[])} for f in funcs or []]
+              ap=cli('apigateway',c);rest,_=safe(lambda:ap.get_rest_apis(limit=100).get('items',[]),[])
+              ap2=cli('apigatewayv2',c);http,_=safe(lambda:ap2.get_apis(MaxResults='100').get('Items',[]),[])
+              a['apiGateway']=[{'id':x.get('id'),'name':x.get('name'),'protocol':'REST'} for x in rest or []]+[{'id':x.get('ApiId'),'name':x.get('Name'),'protocol':x.get('ProtocolType')} for x in http or []]
+              wafr=cli('wafv2',c);wr,_=safe(lambda:wafr.list_web_acls(Scope='REGIONAL',Limit=100).get('WebACLs',[]),[])
+              wafg=cli('wafv2',c,'us-east-1');wg,_=safe(lambda:wafg.list_web_acls(Scope='CLOUDFRONT',Limit=100).get('WebACLs',[]),[])
+              a['waf']=[{'name':w.get('Name'),'arn':w.get('ARN'),'scope':'REGIONAL'} for w in wr or []]+[{'name':w.get('Name'),'arn':w.get('ARN'),'scope':'CLOUDFRONT'} for w in wg or []]
+              ec=cli('elasticache',c);caches,_=safe(lambda:ec.describe_cache_clusters().get('CacheClusters',[]),[]);a['elasticache']=[{'id':x.get('CacheClusterId'),'engine':x.get('Engine'),'subnetGroup':x.get('CacheSubnetGroupName')} for x in (caches or [])[:50]]
+              efs=cli('efs',c);fss,_=safe(lambda:efs.describe_file_systems(MaxItems=100).get('FileSystems',[]),[]);a['efs']=[{'id':x.get('FileSystemId'),'name':x.get('Name')} for x in fss or []]
+              ddb=cli('dynamodb',c);tabs,_=safe(lambda:ddb.list_tables(Limit=100).get('TableNames',[]),[]);a['dynamodb']=[{'name':x} for x in tabs or []]
+              ecs=cli('ecs',c);ecl,_=safe(lambda:ecs.list_clusters(maxResults=100).get('clusterArns',[]),[]);a['ecs']=[{'arn':x,'name':x.rsplit('/',1)[-1]} for x in ecl or []]
+              eks=cli('eks',c);ekl,_=safe(lambda:eks.list_clusters(maxResults=100).get('clusters',[]),[]);a['eks']=[{'name':x} for x in ekl or []]
+              tag=cli('resourcegroupstaggingapi',c);counts={};arns=[]
+              try:
+                  pg=tag.get_paginator('get_resources').paginate(PaginationConfig={'MaxItems':500,'PageSize':100})
+                  for p in pg:
+                      for m in p.get('ResourceTagMappingList',[]):
+                          arn=m.get('ResourceARN','');svc=arn.split(':')[2] if arn.startswith('arn:') and len(arn.split(':'))>2 else 'other';counts[svc]=counts.get(svc,0)+1
+                          if len(arns)<300:arns.append(arn)
+              except Exception as e:a['errors']['tagInventory']=str(e)
+              a['inventory']={'taggedServiceCounts':counts,'taggedResourceArns':arns,'note':'Tagging API inventory includes tagged resources only; service-specific collectors cover key untagged architecture resources.'}
+              return a
           def snapshot(c):
               out={'region':REGION,'errors':{}}
               ident,_=safe(lambda:cli('sts',c).get_caller_identity(),{});aid=(ident or {}).get('Account');out['account']=aid
@@ -166,6 +220,7 @@ Resources:
                       if age>90:old.append({'user':u['UserName'],'last4':k['AccessKeyId'][-4:],'ageDays':age,'status':k.get('Status')})
               ans,_=safe(lambda:cli('accessanalyzer',c).list_analyzers().get('analyzers',[]),[]);out['iam']={'accountMfa':bool((sm or {}).get('AccountMFAEnabled')),'rootAccessKeys':bool((sm or {}).get('AccountAccessKeysPresent')),'userCount':len(users or []),'oldAccessKeys':old[:40],'analyzers':[{'name':a.get('name'),'type':a.get('type'),'status':a.get('status')} for a in ans or []]}
               ac,_=safe(lambda:cli('account',c,'us-east-1').get_alternate_contact(AlternateContactType='SECURITY'),{});out['accountData']={'securityContact':bool((ac or {}).get('AlternateContact'))}
+              out['topology']=architecture(c,out)
               return out
           def findings(c):
               sh=cli('securityhub',c);out=[]
@@ -253,3 +308,6 @@ Outputs:
   SecurityGuardrail:
     Description: API limits calls to the configured browser origin and SafetyCheckReadOnlyRole + ExternalId.
     Value: OriginRestricted+ExternalId+RoleNameRestricted
+  ArchitectureExport:
+    Description: Live snapshot includes topology metadata for draw.io export.
+    Value: AWS4DrawioSupported
