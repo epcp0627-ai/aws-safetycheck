@@ -1,12 +1,17 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: AWS SafetyCheck read-only cross-account role (MVP)
+Description: AWS SafetyCheck least-privilege read-only role for impact analysis
+
 Parameters:
   SafetyCheckAccountId:
     Type: String
+    AllowedPattern: '^[0-9]{12}$'
+    Description: Account ID where the AWS SafetyCheck Lambda runs
   ExternalId:
     Type: String
     NoEcho: true
-    MinLength: 12
+    MinLength: 16
+    Description: Unique value used only for STS AssumeRole
+
 Resources:
   SafetyCheckReadOnlyRole:
     Type: AWS::IAM::Role
@@ -25,10 +30,88 @@ Resources:
               StringEquals:
                 sts:ExternalId:
                   Ref: ExternalId
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/SecurityAudit
-        - arn:aws:iam::aws:policy/ReadOnlyAccess
+      Policies:
+        - PolicyName: SafetyCheckLeastPrivilegeReadOnly
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: SecurityHubRead
+                Effect: Allow
+                Action:
+                  - securityhub:GetFindings
+                  - securityhub:DescribeHub
+                  - securityhub:DescribeStandards
+                  - securityhub:GetEnabledStandards
+                  - securityhub:ListSecurityControlDefinitions
+                Resource: '*'
+              - Sid: EC2NetworkRead
+                Effect: Allow
+                Action:
+                  - ec2:DescribeVpcs
+                  - ec2:DescribeSubnets
+                  - ec2:DescribeSecurityGroups
+                  - ec2:DescribeNetworkInterfaces
+                  - ec2:DescribeInstances
+                  - ec2:DescribeLaunchTemplateVersions
+                  - ec2:DescribeFlowLogs
+                  - ec2:DescribeVolumes
+                  - ec2:DescribeSnapshots
+                  - ec2:DescribeImages
+                  - ec2:DescribeAddresses
+                Resource: '*'
+              - Sid: RDSRead
+                Effect: Allow
+                Action:
+                  - rds:DescribeDBInstances
+                  - rds:DescribeDBClusters
+                  - rds:DescribeDBSubnetGroups
+                  - rds:DescribeDBSnapshots
+                Resource: '*'
+              - Sid: S3ConfigurationRead
+                Effect: Allow
+                Action:
+                  - s3:ListAllMyBuckets
+                  - s3:GetBucketLocation
+                  - s3:GetBucketPolicy
+                  - s3:GetBucketPolicyStatus
+                  - s3:GetBucketPublicAccessBlock
+                  - s3:GetBucketEncryption
+                  - s3:GetBucketLogging
+                  - s3:GetBucketVersioning
+                  - s3:GetLifecycleConfiguration
+                Resource: '*'
+              - Sid: CloudTrailAndCloudWatchRead
+                Effect: Allow
+                Action:
+                  - cloudtrail:DescribeTrails
+                  - cloudtrail:GetTrailStatus
+                  - cloudtrail:GetEventSelectors
+                  - logs:DescribeLogGroups
+                  - cloudwatch:ListMetrics
+                  - cloudwatch:GetMetricData
+                  - cloudwatch:GetMetricStatistics
+                Resource: '*'
+              - Sid: AutoScalingAndELBRead
+                Effect: Allow
+                Action:
+                  - autoscaling:DescribeAutoScalingGroups
+                  - autoscaling:DescribeLaunchConfigurations
+                  - elasticloadbalancing:DescribeLoadBalancers
+                  - elasticloadbalancing:DescribeTargetGroups
+                  - elasticloadbalancing:DescribeTargetHealth
+                  - elasticloadbalancing:DescribeListeners
+                  - elasticloadbalancing:DescribeRules
+                Resource: '*'
+              - Sid: TaggingRead
+                Effect: Allow
+                Action:
+                  - tag:GetResources
+                  - tag:GetTagKeys
+                  - tag:GetTagValues
+                Resource: '*'
+
 Outputs:
   RoleArn:
+    Description: Enter this ARN in AWS SafetyCheck
     Value:
       Fn::GetAtt: [SafetyCheckReadOnlyRole, Arn]
