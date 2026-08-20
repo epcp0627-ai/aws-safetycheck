@@ -44,7 +44,7 @@ Resources:
                   - securityhub:GetEnabledStandards
                   - securityhub:ListSecurityControlDefinitions
                 Resource: '*'
-              - Sid: EC2NetworkRead
+              - Sid: EC2NetworkAndStorageRead
                 Effect: Allow
                 Action:
                   - ec2:DescribeVpcs
@@ -58,6 +58,7 @@ Resources:
                   - ec2:DescribeSnapshots
                   - ec2:DescribeImages
                   - ec2:DescribeAddresses
+                  - ec2:GetEbsEncryptionByDefault
                 Resource: '*'
               - Sid: RDSRead
                 Effect: Allow
@@ -80,6 +81,11 @@ Resources:
                   - s3:GetBucketVersioning
                   - s3:GetLifecycleConfiguration
                 Resource: '*'
+              - Sid: S3AccountPublicAccessRead
+                Effect: Allow
+                Action:
+                  - s3control:GetPublicAccessBlock
+                Resource: '*'
               - Sid: CloudTrailAndCloudWatchRead
                 Effect: Allow
                 Action:
@@ -90,6 +96,32 @@ Resources:
                   - cloudwatch:ListMetrics
                   - cloudwatch:GetMetricData
                   - cloudwatch:GetMetricStatistics
+                Resource: '*'
+              - Sid: IAMRead
+                Effect: Allow
+                Action:
+                  - iam:GetAccountSummary
+                  - iam:GetAccountPasswordPolicy
+                  - iam:ListUsers
+                  - iam:ListAccessKeys
+                  - iam:GetAccessKeyLastUsed
+                Resource: '*'
+              - Sid: AccessAnalyzerRead
+                Effect: Allow
+                Action:
+                  - access-analyzer:ListAnalyzers
+                Resource: '*'
+              - Sid: AccountContactRead
+                Effect: Allow
+                Action:
+                  - account:GetAlternateContact
+                Resource: '*'
+              - Sid: KMSRead
+                Effect: Allow
+                Action:
+                  - kms:ListKeys
+                  - kms:ListAliases
+                  - kms:DescribeKey
                 Resource: '*'
               - Sid: AutoScalingAndELBRead
                 Effect: Allow
@@ -108,6 +140,11 @@ Resources:
                   - tag:GetResources
                   - tag:GetTagKeys
                   - tag:GetTagValues
+                Resource: '*'
+              - Sid: IdentityRead
+                Effect: Allow
+                Action:
+                  - sts:GetCallerIdentity
                 Resource: '*'
 
 Outputs:
