@@ -1,7 +1,6 @@
 (() => {
   const SERVICE_ACCOUNT_ID = '369503741621';
   const ROLE_TEMPLATE = './infra/customer-readonly-role.yaml';
-  const ROLE_TEMPLATE_PUBLIC = 'https://epcp0627-ai.github.io/aws-safetycheck/infra/customer-readonly-role.yaml';
   const INSTALL_REGION = 'ap-northeast-1';
   const STACK_NAME = 'aws-safetycheck-readonly';
   const dlg = document.getElementById('awsDlg');
@@ -25,15 +24,25 @@
     return external.value.trim();
   };
 
-  const quickCreateUrl = (externalId) => {
-    const params = new URLSearchParams({
-      templateURL: ROLE_TEMPLATE_PUBLIC,
-      stackName: STACK_NAME,
-      param_ExternalId: externalId,
-      param_SafetyCheckAccountId: SERVICE_ACCOUNT_ID
-    });
-    return `https://${INSTALL_REGION}.console.aws.amazon.com/cloudformation/home?region=${INSTALL_REGION}#/stacks/quickcreate?${params.toString()}`;
-  };
+  const cloudFormationCreateUrl = `https://${INSTALL_REGION}.console.aws.amazon.com/cloudformation/home?region=${INSTALL_REGION}#/stacks/create/template`;
+
+  async function downloadTailoredTemplate(externalId) {
+    const res = await fetch(ROLE_TEMPLATE, { cache:'no-store' });
+    if (!res.ok) throw new Error(`YAML 다운로드 실패: HTTP ${res.status}`);
+    let text = await res.text();
+    const marker = '  ExternalId:\n    Type: String\n';
+    if (!text.includes(marker)) throw new Error('ExternalId 파라미터 위치를 찾지 못했습니다.');
+    text = text.replace(marker, `  ExternalId:\n    Type: String\n    Default: '${externalId}'\n`);
+    const blob = new Blob([text], { type:'text/yaml;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'customer-readonly-role.yaml';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1500);
+  }
 
   const guide = document.createElement('div');
   guide.className = 'saas-connect-guide';
@@ -47,21 +56,21 @@
 
     <div class="saas-quick">
       <div>
-        <strong>가장 빠른 방법</strong>
-        <small>External ID와 SafetyCheckAccountId를 자동 입력한 CloudFormation Quick Create 화면을 엽니다.</small>
+        <strong>빠른 설치</strong>
+        <small>External ID가 자동 입력된 전용 YAML을 내려받고 CloudFormation 새 스택 화면을 바로 엽니다.</small>
       </div>
-      <button type="button" class="btn primary" id="quickInstall">AWS에 ReadOnly Role 설치</button>
+      <button type="button" class="btn primary" id="quickInstall">CloudFormation 설치 시작</button>
     </div>
 
     <div class="saas-steps">
-      <div class="saas-step"><b>1</b><div><strong>External ID 준비</strong><small>사이트에서 자동 생성 · 24자 이상 난수</small></div></div>
-      <div class="saas-step"><b>2</b><div><strong>CloudFormation 생성</strong><small>Quick Create에서 IAM 리소스 생성 승인 후 스택 생성</small></div></div>
+      <div class="saas-step"><b>1</b><div><strong>전용 YAML 자동 생성</strong><small>현재 External ID를 YAML 기본값에 자동 반영</small></div></div>
+      <div class="saas-step"><b>2</b><div><strong>CloudFormation 업로드</strong><small>다운로드된 YAML 선택 · 스택 이름 ${STACK_NAME}</small></div></div>
       <div class="saas-step"><b>3</b><div><strong>RoleArn 확인</strong><small>스택 생성 완료 후 Outputs의 RoleArn 복사</small></div></div>
       <div class="saas-step"><b>4</b><div><strong>연결 및 자동 분석</strong><small>RoleArn을 붙여넣고 연결 실행</small></div></div>
     </div>
 
     <div class="saas-actions">
-      <a class="btn" href="${ROLE_TEMPLATE}" download="customer-readonly-role.yaml">YAML 직접 받기</a>
+      <a class="btn" href="${ROLE_TEMPLATE}" download="customer-readonly-role.yaml">원본 YAML 받기</a>
       <button type="button" class="btn" id="genExternalId">External ID 새로 생성</button>
       <button type="button" class="btn" id="copyExternalId">External ID 복사</button>
     </div>
@@ -69,7 +78,7 @@
     <div class="saas-account-box">
       <span>SafetyCheckAccountId</span>
       <code>${SERVICE_ACCOUNT_ID}</code>
-      <small>Quick Create와 customer-readonly-role.yaml에 기본값으로 이미 입력되어 있습니다.</small>
+      <small>원본 YAML과 전용 YAML 모두 기본값으로 이미 입력되어 있습니다.</small>
     </div>`;
 
   const notice = dlg.querySelector('.notice');
@@ -84,10 +93,22 @@
   const genBtn = document.getElementById('genExternalId');
   const copyBtn = document.getElementById('copyExternalId');
 
-  if (quickBtn) quickBtn.onclick = () => {
+  if (quickBtn) quickBtn.onclick = async () => {
     const externalId = ensureExternalId();
     if (!externalId) return alert('External ID 입력란을 찾지 못했습니다.');
-    window.open(quickCreateUrl(externalId), '_blank', 'noopener');
+    const old = quickBtn.textContent;
+    quickBtn.disabled = true;
+    quickBtn.textContent = '설치 파일 준비 중...';
+    try {
+      await downloadTailoredTemplate(externalId);
+      window.open(cloudFormationCreateUrl, '_blank', 'noopener');
+      alert(`customer-readonly-role.yaml을 다운로드했습니다.\n\nCloudFormation에서:\n1. Upload a template file 선택\n2. 방금 받은 YAML 업로드\n3. 스택 이름: ${STACK_NAME}\n4. IAM 리소스 생성 승인 후 생성\n\nExternal ID와 SafetyCheckAccountId는 YAML에 이미 입력되어 있습니다.`);
+    } catch (e) {
+      alert(`설치 준비 실패: ${e.message}`);
+    } finally {
+      quickBtn.disabled = false;
+      quickBtn.textContent = old;
+    }
   };
 
   if (genBtn) genBtn.onclick = () => {
@@ -121,7 +142,7 @@
     if (title) title.textContent = 'ReadOnly AWS 계정 연결';
     if (para) para.innerHTML = '고객 AWS에는 <b>ReadOnly IAM Role 1개</b>만 생성합니다.';
     if (list) list.innerHTML = `
-      <li>CloudFormation Quick Create로 설치 단계 최소화</li>
+      <li>전용 YAML 자동 생성으로 설치 입력 최소화</li>
       <li>RoleArn + External ID로 STS AssumeRole</li>
       <li>단일 리전 또는 활성 리전 전체 ReadOnly 분석</li>
       <li>CIS 보고서 + 실제 AWS 상태 + 아키텍처 인벤토리 결합</li>`;
