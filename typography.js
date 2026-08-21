@@ -11,8 +11,8 @@
   style.id = 'safetycheckTypography';
   style.textContent = `
     :root{
-      --t:#f2f6fb;
-      --m:#a9b9ca;
+      --t:#f4f7fb;
+      --m:#b7c5d3;
     }
 
     html{-webkit-text-size-adjust:100%}
@@ -30,8 +30,8 @@
     }
 
     body{
-      font-size:15px!important;
-      line-height:1.68!important;
+      font-size:17px!important;
+      line-height:1.7!important;
       letter-spacing:-.012em;
     }
 
@@ -42,59 +42,62 @@
     .workflow-head h3,
     .topology-hero h3{
       letter-spacing:-.028em!important;
-      line-height:1.28!important;
+      line-height:1.3!important;
       font-weight:720!important;
       word-break:keep-all;
     }
 
-    h1{font-size:29px!important}
-    .heroCard h2{font-size:34px!important;line-height:1.2!important}
-    .head h3{font-size:20px!important}
+    h1{font-size:32px!important}
+    h2{font-size:28px!important}
+    h3{font-size:23px!important}
+    h4{font-size:18px!important}
+    .heroCard h2{font-size:38px!important;line-height:1.2!important}
+    .head h3{font-size:22px!important}
 
     p,li,td,.detail p,.detail li,.muted,.notice{
       word-break:keep-all;
       overflow-wrap:anywhere;
     }
 
-    .muted{color:#a9b9ca!important}
-    .note,.notice{line-height:1.7!important}
+    .muted{color:#b7c5d3!important;font-size:15px!important}
+    .note,.notice{font-size:15px!important;line-height:1.72!important}
 
     .eyebrow,.kicker,.saas-label{
-      font-size:11px!important;
-      letter-spacing:.075em!important;
-      line-height:1.35!important;
+      font-size:12px!important;
+      letter-spacing:.07em!important;
+      line-height:1.4!important;
       font-weight:780!important;
     }
 
     .nav button{
-      font-size:13px!important;
-      line-height:1.35!important;
+      font-size:15px!important;
+      line-height:1.4!important;
     }
-    .nav button>span{font-weight:680!important}
+    .nav button>span{font-weight:690!important}
     .nav button>small{
-      font-size:10.5px!important;
-      line-height:1.35!important;
-      color:#8fa1b3!important;
+      font-size:12px!important;
+      line-height:1.4!important;
+      color:#a4b4c4!important;
     }
-    .nav-no{font-size:11px!important}
+    .nav-no{font-size:12px!important}
 
     .btn,
     button,
     input,
     select,
     textarea{
-      font-size:13px;
-      line-height:1.45;
+      font-size:15px!important;
+      line-height:1.5!important;
     }
-    .btn{font-weight:620}
+    .btn{font-weight:630}
 
     th{
-      font-size:11px!important;
-      letter-spacing:.015em;
+      font-size:12.5px!important;
+      letter-spacing:.01em;
       font-weight:720!important;
-      color:#9eb0c1!important;
+      color:#adbdcc!important;
     }
-    td{font-size:13px!important;line-height:1.55!important}
+    td{font-size:14.5px!important;line-height:1.62!important}
 
     .finding p,
     .finding-ko,
@@ -103,33 +106,33 @@
     .detail li,
     .workflow-step p,
     .saas-desc{
-      font-size:12.5px!important;
-      line-height:1.65!important;
+      font-size:14px!important;
+      line-height:1.7!important;
     }
 
     .sev,.rec,.badge,.demo,.workflow-state{
-      font-size:10.5px!important;
+      font-size:11.5px!important;
       letter-spacing:0!important;
     }
 
-    .workflow-step-top b{font-size:14px!important}
+    .workflow-step-top b{font-size:16px!important}
     .workflow-step-top small,
     .workflow-action,
     .flow-context-copy>span{
-      font-size:11.5px!important;
-      line-height:1.55!important;
+      font-size:13px!important;
+      line-height:1.6!important;
     }
 
     .modal label,
     .region-compact-head b,
     .external-id-caption>span{
-      font-size:12.5px!important;
+      font-size:14px!important;
       font-weight:650!important;
     }
-    .region-option b{font-size:12px!important}
+    .region-option b{font-size:13.5px!important}
     .region-option small,
     #regionPicker .region-status{
-      font-size:10.5px!important;
+      font-size:11.5px!important;
     }
 
     code,.tree,.saas-account-box code{
@@ -138,10 +141,13 @@
     }
 
     @media(max-width:650px){
-      body{font-size:14px!important}
-      h1{font-size:25px!important}
-      .heroCard h2{font-size:29px!important}
-      td{font-size:12.5px!important}
+      body{font-size:16px!important}
+      h1{font-size:28px!important}
+      h2{font-size:25px!important}
+      h3{font-size:21px!important}
+      .heroCard h2{font-size:32px!important}
+      td{font-size:14px!important}
+      .muted{font-size:14px!important}
     }
   `;
   document.head.appendChild(style);
