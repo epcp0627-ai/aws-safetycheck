@@ -35,16 +35,19 @@ Resources:
     Properties:
       RoleName: SafetyCheckReadOnlyRole
       MaxSessionDuration: 3600
-      Description: Read-only metadata role assumed only by the AWS SafetyCheck service Lambda role.
+      Description: Read-only metadata role assumable only by the AWS SafetyCheck service Lambda role with the matching External ID.
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
           - Effect: Allow
             Principal:
               AWS:
-                Fn::Sub: arn:aws:iam::${SafetyCheckAccountId}:role/AWSSafetyCheckServiceLambdaRole
+                Fn::Sub: arn:aws:iam::${SafetyCheckAccountId}:root
             Action: sts:AssumeRole
             Condition:
+              ArnEquals:
+                aws:PrincipalArn:
+                  Fn::Sub: arn:aws:iam::${SafetyCheckAccountId}:role/AWSSafetyCheckServiceLambdaRole
               StringEquals:
                 sts:ExternalId:
                   Ref: ExternalId
@@ -218,7 +221,7 @@ Outputs:
     Value:
       Fn::GetAtt: [SafetyCheckReadOnlyRole, Arn]
   TrustedPrincipal:
-    Description: Only this SafetyCheck service role may assume the customer role.
+    Description: The trust condition permits only this SafetyCheck service role ARN.
     Value:
       Fn::Sub: arn:aws:iam::${SafetyCheckAccountId}:role/AWSSafetyCheckServiceLambdaRole
   ConnectionMode:
