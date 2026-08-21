@@ -4,31 +4,9 @@
   const ROLE_TEMPLATE_PUBLIC = 'https://epcp0627-ai.github.io/aws-safetycheck/infra/customer-readonly-role.yaml';
   const INSTALL_REGION = 'ap-northeast-1';
   const STACK_NAME = 'aws-safetycheck-readonly';
-  const SERVICE_API_HOST = 'c6o05b2a9i.execute-api.us-east-1.amazonaws.com';
   const dlg = document.getElementById('awsDlg');
   const testBtn = document.getElementById('test');
   if (!dlg || !testBtn) return;
-
-  // Compatibility bridge for the current live.js client. The shared SaaS API
-  // does not require an API token, so remove the legacy header before sending.
-  const nativeFetch = window.fetch.bind(window);
-  window.fetch = (input, init = {}) => {
-    const url = typeof input === 'string' ? input : (input?.url || '');
-    if (url.includes(SERVICE_API_HOST)) {
-      const headers = new Headers(init.headers || {});
-      headers.delete('x-safetycheck-token');
-      headers.delete('X-SafetyCheck-Token');
-      init = { ...init, headers };
-    }
-    return nativeFetch(input, init);
-  };
-
-  const token = document.getElementById('accessToken');
-  if (token) {
-    token.value = 'shared-saas-service';
-    const label = token.closest('label');
-    if (label) label.style.display = 'none';
-  }
 
   const external = document.getElementById('externalId');
   const role = document.getElementById('roleArn');
@@ -96,7 +74,7 @@
 
   const notice = dlg.querySelector('.notice');
   if (notice) {
-    notice.innerHTML = '연결에 필요한 값은 <b>RoleArn</b>과 <b>External ID</b> 두 가지입니다.<br>Access Key는 요구하거나 저장하지 않습니다.';
+    notice.innerHTML = '연결에 필요한 값은 <b>RoleArn</b>과 <b>External ID</b> 두 가지입니다.<br>Access Key와 API Access Token은 요구하거나 저장하지 않습니다.';
     notice.after(guide);
   } else {
     dlg.querySelector('.modal')?.prepend(guide);
@@ -145,8 +123,8 @@
     if (list) list.innerHTML = `
       <li>CloudFormation Quick Create로 설치 단계 최소화</li>
       <li>RoleArn + External ID로 STS AssumeRole</li>
-      <li>CIS 보고서와 실제 AWS 상태를 자동 결합 분석</li>
-      <li>리소스 메타데이터를 기반으로 아키텍처 구성도 생성</li>`;
+      <li>단일 리전 또는 활성 리전 전체 ReadOnly 분석</li>
+      <li>CIS 보고서 + 실제 AWS 상태 + 아키텍처 인벤토리 결합</li>`;
     const tails = [...card.querySelectorAll('p.muted')];
     const tail = tails[tails.length - 1];
     if (tail) tail.innerHTML = 'SafetyCheck Role에는 <b>리소스 생성·수정·삭제 권한이 없습니다.</b>';
