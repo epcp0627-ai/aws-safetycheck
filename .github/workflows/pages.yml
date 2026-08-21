@@ -28,6 +28,7 @@ jobs:
               '<script src="./live-badge.js"></script>',
               '<script src="./saas-mode.js"></script>',
               '<script src="./installer-guide.js"></script>',
+              '<script src="./connection-ui.js"></script>',
               '<script src="./topology.js"></script>',
               '<script src="./ux.js"></script>',
               '<script src="./workflow-guide.js"></script>',
