@@ -1,21 +1,15 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: AWS SafetyCheck shared SaaS service API. Deploy once in the SafetyCheck operator account.
+Description: AWS SafetyCheck shared SaaS API. Deploy once in the SafetyCheck operator account.
 
 Metadata:
   AWS::CloudFormation::Interface:
     ParameterGroups:
       - Label:
           default: Service settings
-        Parameters:
-          - AllowedOrigin
-          - TargetRegion
+        Parameters: [AllowedOrigin, TargetRegion]
       - Label:
           default: Cost guardrails
-        Parameters:
-          - LogRetentionDays
-          - LambdaReservedConcurrency
-          - ApiThrottleRate
-          - ApiThrottleBurst
+        Parameters: [LogRetentionDays, LambdaReservedConcurrency, ApiThrottleRate, ApiThrottleBurst]
 
 Parameters:
   AllowedOrigin:
@@ -25,7 +19,7 @@ Parameters:
   TargetRegion:
     Type: String
     Default: ap-northeast-1
-    Description: AWS region analyzed in customer accounts.
+    Description: Default AWS region analyzed in customer accounts.
   LogRetentionDays:
     Type: Number
     Default: 7
@@ -35,13 +29,12 @@ Parameters:
     Default: 0
     MinValue: 0
     MaxValue: 10
-    Description: 0 disables reserved concurrency. Keep 0 on low-quota accounts.
+    Description: 0 disables reserved concurrency.
   ApiThrottleRate:
     Type: Number
     Default: 1
     MinValue: 1
     MaxValue: 10
-    Description: Requests per second allowed by API Gateway.
   ApiThrottleBurst:
     Type: Number
     Default: 2
@@ -55,6 +48,8 @@ Resources:
   SafetyCheckLambdaRole:
     Type: AWS::IAM::Role
     Properties:
+      RoleName: AWSSafetyCheckServiceLambdaRole
+      Description: AWS SafetyCheck shared service Lambda role. Only assumes customer SafetyCheckReadOnlyRole roles.
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -80,8 +75,8 @@ Resources:
       Runtime: python3.12
       Handler: index.lambda_handler
       Role: !GetAtt SafetyCheckLambdaRole.Arn
-      Timeout: 30
-      MemorySize: 256
+      Timeout: 60
+      MemorySize: 512
       ReservedConcurrentExecutions: !If [UseReservedConcurrency, !Ref LambdaReservedConcurrency, !Ref 'AWS::NoValue']
       Environment:
         Variables:
@@ -89,154 +84,295 @@ Resources:
           ALLOWED_ORIGIN: !Ref AllowedOrigin
       Code:
         ZipFile: |
-          import json,boto3,os,datetime,re
-          REGION=os.environ.get('TARGET_REGION','ap-northeast-1')
-          ALLOWED_ORIGIN=os.environ.get('ALLOWED_ORIGIN','')
-          ROLE_RE=re.compile(r'^arn:aws:iam::\d{12}:role/SafetyCheckReadOnlyRole$')
-          def resp(c,b): return {'statusCode':c,'headers':{'content-type':'application/json'},'body':json.dumps(b,ensure_ascii=False,default=str)}
-          def allowed(e):
-              h=e.get('headers') or {};o=h.get('origin') or h.get('Origin') or ''
-              return bool(ALLOWED_ORIGIN) and o==ALLOWED_ORIGIN
-          def assume(a,x=''):
-              if not ROLE_RE.match(str(a)):raise ValueError('roleArn must point to SafetyCheckReadOnlyRole')
-              if len(str(x))<24:raise ValueError('externalId must be at least 24 characters')
-              q={'RoleArn':a,'RoleSessionName':'SafetyCheckReadOnly','DurationSeconds':900,'ExternalId':x}
-              c=boto3.client('sts').assume_role(**q)['Credentials']
-              return {'aws_access_key_id':c['AccessKeyId'],'aws_secret_access_key':c['SecretAccessKey'],'aws_session_token':c['SessionToken'],'region_name':REGION}
-          def cli(n,c,r=None):
-              q=dict(c)
-              if r:q['region_name']=r
-              return boto3.client(n,**q)
-          def safe(f,d=None):
-              try:return f(),None
-              except Exception as e:return d,str(e)
+          import json, boto3, os, datetime, re
+
+          DEFAULT_REGION = os.environ.get('TARGET_REGION', 'ap-northeast-1')
+          ALLOWED_ORIGIN = os.environ.get('ALLOWED_ORIGIN', '')
+          ROLE_RE = re.compile(r'^arn:aws:iam::\d{12}:role/SafetyCheckReadOnlyRole$')
+
+          def resp(code, body):
+              return {'statusCode': code, 'headers': {'content-type': 'application/json'}, 'body': json.dumps(body, ensure_ascii=False, default=str)}
+
+          def allowed(event):
+              h = event.get('headers') or {}
+              origin = h.get('origin') or h.get('Origin') or ''
+              return bool(ALLOWED_ORIGIN) and origin == ALLOWED_ORIGIN
+
+          def assume(role_arn, external_id):
+              if not ROLE_RE.match(str(role_arn)):
+                  raise ValueError('roleArn must point to SafetyCheckReadOnlyRole')
+              if len(str(external_id or '')) < 24:
+                  raise ValueError('externalId must be at least 24 characters')
+              q = {'RoleArn': role_arn, 'RoleSessionName': 'SafetyCheckReadOnly', 'DurationSeconds': 900, 'ExternalId': external_id}
+              c = boto3.client('sts').assume_role(**q)['Credentials']
+              return {'aws_access_key_id': c['AccessKeyId'], 'aws_secret_access_key': c['SecretAccessKey'], 'aws_session_token': c['SessionToken']}
+
+          def cli(name, creds, region=None):
+              return boto3.client(name, region_name=region or DEFAULT_REGION, **creds)
+
+          def safe(fn, default=None):
+              try:
+                  return fn(), None
+              except Exception as e:
+                  return default, str(e)
+
+          def collect(client, operation, key, **kwargs):
+              if client.can_paginate(operation):
+                  out = []
+                  for page in client.get_paginator(operation).paginate(**kwargs):
+                      out.extend(page.get(key, []) or [])
+                  return out
+              return getattr(client, operation)(**kwargs).get(key, []) or []
+
           def name_tag(tags):
               for t in tags or []:
-                  if t.get('Key')=='Name':return t.get('Value')
+                  if t.get('Key') == 'Name':
+                      return t.get('Value') or ''
               return ''
-          def ssl_deny(p):
-              try:p=json.loads(p)
-              except:return False
-              s=p.get('Statement',[]);s=s if isinstance(s,list) else [s]
-              for z in s:
-                  if str(z.get('Effect','')).lower()!='deny':continue
-                  c=z.get('Condition',{})
-                  for op in ('Bool','StringEquals'):
-                      if str((c.get(op) or {}).get('aws:SecureTransport','')).lower()=='false':return True
+
+          def ssl_deny(policy_text):
+              try:
+                  p = json.loads(policy_text)
+              except Exception:
+                  return False
+              stmts = p.get('Statement', [])
+              stmts = stmts if isinstance(stmts, list) else [stmts]
+              for s in stmts:
+                  if str(s.get('Effect', '')).lower() != 'deny':
+                      continue
+                  cond = s.get('Condition', {})
+                  for op in ('Bool', 'StringEquals'):
+                      if str((cond.get(op) or {}).get('aws:SecureTransport', '')).lower() == 'false':
+                          return True
               return False
-          def architecture(c,base):
-              a={'coverage':'architecture-metadata-v1','region':REGION,'errors':{},'inventory':{}}
-              ec2=cli('ec2',c)
-              vpcs,e=safe(lambda:ec2.describe_vpcs().get('Vpcs',[]),[]);a['errors']['vpcs']=e if e else None
-              subs,e=safe(lambda:ec2.describe_subnets().get('Subnets',[]),[]);a['errors']['subnets']=e if e else None
-              inst,e=safe(lambda:[i for r in ec2.describe_instances().get('Reservations',[]) for i in r.get('Instances',[])],[]);a['errors']['instances']=e if e else None
-              igws,_=safe(lambda:ec2.describe_internet_gateways().get('InternetGateways',[]),[])
-              nats,_=safe(lambda:ec2.describe_nat_gateways().get('NatGateways',[]),[])
-              a['vpcs']=[{'id':v.get('VpcId'),'cidr':v.get('CidrBlock'),'name':name_tag(v.get('Tags')),'default':v.get('IsDefault')} for v in vpcs or []]
-              a['subnets']=[{'id':s.get('SubnetId'),'vpcId':s.get('VpcId'),'cidr':s.get('CidrBlock'),'az':s.get('AvailabilityZone'),'name':name_tag(s.get('Tags')),'publicIpOnLaunch':s.get('MapPublicIpOnLaunch')} for s in subs or []]
-              a['instances']=[{'id':i.get('InstanceId'),'name':name_tag(i.get('Tags')),'type':i.get('InstanceType'),'state':(i.get('State') or {}).get('Name'),'vpcId':i.get('VpcId'),'subnetId':i.get('SubnetId'),'privateIp':i.get('PrivateIpAddress'),'publicIp':i.get('PublicIpAddress'),'securityGroups':[x.get('GroupId') for x in i.get('SecurityGroups',[])]} for i in (inst or [])[:100]]
-              a['internetGateways']=[{'id':g.get('InternetGatewayId'),'vpcIds':[x.get('VpcId') for x in g.get('Attachments',[]) if x.get('State')=='available']} for g in igws or []]
-              a['natGateways']=[{'id':n.get('NatGatewayId'),'vpcId':n.get('VpcId'),'subnetId':n.get('SubnetId'),'state':n.get('State'),'publicIps':[x.get('PublicIp') for x in n.get('NatGatewayAddresses',[]) if x.get('PublicIp')]} for n in (nats or [])[:50]]
-              elb=cli('elbv2',c);lbs,_=safe(lambda:elb.describe_load_balancers().get('LoadBalancers',[]),[]);tgs,_=safe(lambda:elb.describe_target_groups().get('TargetGroups',[]),[])
-              tgout=[]
-              for t in (tgs or [])[:50]:
-                  th,_=safe(lambda arn=t.get('TargetGroupArn'):elb.describe_target_health(TargetGroupArn=arn).get('TargetHealthDescriptions',[]),[])
-                  tgout.append({'arn':t.get('TargetGroupArn'),'name':t.get('TargetGroupName'),'vpcId':t.get('VpcId'),'protocol':t.get('Protocol'),'port':t.get('Port'),'targetType':t.get('TargetType'),'loadBalancerArns':t.get('LoadBalancerArns',[]),'targets':[{'id':x.get('Target',{}).get('Id'),'port':x.get('Target',{}).get('Port'),'state':x.get('TargetHealth',{}).get('State')} for x in th or []]})
-              a['loadBalancers']=[{'arn':l.get('LoadBalancerArn'),'name':l.get('LoadBalancerName'),'type':l.get('Type'),'scheme':l.get('Scheme'),'vpcId':l.get('VpcId'),'dns':l.get('DNSName'),'subnetIds':[z.get('SubnetId') for z in (l.get('AvailabilityZones') or [])],'securityGroups':l.get('SecurityGroups',[])} for l in (lbs or [])[:50]]
-              a['targetGroups']=tgout
-              asc=cli('autoscaling',c);ags,_=safe(lambda:asc.describe_auto_scaling_groups().get('AutoScalingGroups',[]),[])
-              a['autoScalingGroups']=[{'name':g.get('AutoScalingGroupName'),'min':g.get('MinSize'),'max':g.get('MaxSize'),'desired':g.get('DesiredCapacity'),'instanceIds':[x.get('InstanceId') for x in g.get('Instances',[])],'targetGroupArns':g.get('TargetGroupARNs',[])} for g in (ags or [])[:50]]
-              rds=cli('rds',c);dbs,_=safe(lambda:rds.describe_db_instances().get('DBInstances',[]),[])
-              a['rds']=[{'id':d.get('DBInstanceIdentifier'),'engine':d.get('Engine'),'class':d.get('DBInstanceClass'),'multiAZ':d.get('MultiAZ'),'vpcId':(d.get('DBSubnetGroup') or {}).get('VpcId'),'subnetIds':[x.get('SubnetIdentifier') for x in ((d.get('DBSubnetGroup') or {}).get('Subnets') or [])],'securityGroups':[x.get('VpcSecurityGroupId') for x in d.get('VpcSecurityGroups',[])],'endpoint':(d.get('Endpoint') or {}).get('Address')} for d in (dbs or [])[:50]]
-              s3=base.get('s3',{});a['s3']=[{'name':b.get('name'),'public':b.get('public')} for b in (s3.get('buckets') or [])]
-              cf=cli('cloudfront',c,'us-east-1');dists,_=safe(lambda:((cf.list_distributions(MaxItems='100').get('DistributionList') or {}).get('Items') or []),[])
-              a['cloudfront']=[{'id':d.get('Id'),'domain':d.get('DomainName'),'enabled':d.get('Enabled'),'webAclId':d.get('WebACLId'),'origins':[{'id':o.get('Id'),'domain':o.get('DomainName')} for o in ((d.get('Origins') or {}).get('Items') or [])]} for d in dists or []]
-              r53=cli('route53',c,'us-east-1');zones,_=safe(lambda:r53.list_hosted_zones().get('HostedZones',[]),[]);a['route53']=[{'id':z.get('Id'),'name':z.get('Name'),'private':(z.get('Config') or {}).get('PrivateZone')} for z in (zones or [])[:100]]
-              lam=cli('lambda',c);funcs,_=safe(lambda:lam.list_functions(MaxItems=100).get('Functions',[]),[]);a['lambda']=[{'name':f.get('FunctionName'),'runtime':f.get('Runtime'),'vpcId':(f.get('VpcConfig') or {}).get('VpcId'),'subnetIds':(f.get('VpcConfig') or {}).get('SubnetIds',[]),'securityGroups':(f.get('VpcConfig') or {}).get('SecurityGroupIds',[])} for f in funcs or []]
-              ap=cli('apigateway',c);rest,_=safe(lambda:ap.get_rest_apis(limit=100).get('items',[]),[])
-              ap2=cli('apigatewayv2',c);http,_=safe(lambda:ap2.get_apis(MaxResults='100').get('Items',[]),[])
-              a['apiGateway']=[{'id':x.get('id'),'name':x.get('name'),'protocol':'REST'} for x in rest or []]+[{'id':x.get('ApiId'),'name':x.get('Name'),'protocol':x.get('ProtocolType')} for x in http or []]
-              wafr=cli('wafv2',c);wr,_=safe(lambda:wafr.list_web_acls(Scope='REGIONAL',Limit=100).get('WebACLs',[]),[])
-              wafg=cli('wafv2',c,'us-east-1');wg,_=safe(lambda:wafg.list_web_acls(Scope='CLOUDFRONT',Limit=100).get('WebACLs',[]),[])
-              a['waf']=[{'name':w.get('Name'),'arn':w.get('ARN'),'scope':'REGIONAL'} for w in wr or []]+[{'name':w.get('Name'),'arn':w.get('ARN'),'scope':'CLOUDFRONT'} for w in wg or []]
-              ec=cli('elasticache',c);caches,_=safe(lambda:ec.describe_cache_clusters().get('CacheClusters',[]),[]);a['elasticache']=[{'id':x.get('CacheClusterId'),'engine':x.get('Engine'),'subnetGroup':x.get('CacheSubnetGroupName')} for x in (caches or [])[:50]]
-              efs=cli('efs',c);fss,_=safe(lambda:efs.describe_file_systems(MaxItems=100).get('FileSystems',[]),[]);a['efs']=[{'id':x.get('FileSystemId'),'name':x.get('Name')} for x in fss or []]
-              ddb=cli('dynamodb',c);tabs,_=safe(lambda:ddb.list_tables(Limit=100).get('TableNames',[]),[]);a['dynamodb']=[{'name':x} for x in tabs or []]
-              ecs=cli('ecs',c);ecl,_=safe(lambda:ecs.list_clusters(maxResults=100).get('clusterArns',[]),[]);a['ecs']=[{'arn':x,'name':x.rsplit('/',1)[-1]} for x in ecl or []]
-              eks=cli('eks',c);ekl,_=safe(lambda:eks.list_clusters(maxResults=100).get('clusters',[]),[]);a['eks']=[{'name':x} for x in ekl or []]
-              tag=cli('resourcegroupstaggingapi',c);counts={};arns=[]
+
+          def region_list(creds):
+              ec2 = cli('ec2', creds, DEFAULT_REGION)
+              rows = ec2.describe_regions(AllRegions=False).get('Regions', [])
+              return [{'name': r.get('RegionName'), 'optInStatus': r.get('OptInStatus')} for r in rows]
+
+          def ec2_instances(ec2):
+              out = []
+              for p in ec2.get_paginator('describe_instances').paginate():
+                  for r in p.get('Reservations', []):
+                      out.extend(r.get('Instances', []))
+              return out
+
+          def global_inventory(creds, account_id):
+              g = {'errors': {}}
+              s3 = cli('s3', creds, DEFAULT_REGION)
+              buckets, e = safe(lambda: s3.list_buckets().get('Buckets', []), [])
+              g['errors']['s3'] = e
+              detailed = []
+              for b in buckets or []:
+                  n = b.get('Name')
+                  pol, _ = safe(lambda n=n: s3.get_bucket_policy(Bucket=n), {})
+                  ps, _ = safe(lambda n=n: s3.get_bucket_policy_status(Bucket=n), {})
+                  bp, _ = safe(lambda n=n: s3.get_bucket_public_access_block(Bucket=n), {})
+                  detailed.append({'name': n, 'sslEnforced': ssl_deny((pol or {}).get('Policy', '')), 'public': ((ps or {}).get('PolicyStatus') or {}).get('IsPublic'), 'bpa': (bp or {}).get('PublicAccessBlockConfiguration', {})})
+              account_bpa = {}
+              if account_id:
+                  account_bpa = (safe(lambda: cli('s3control', creds, DEFAULT_REGION).get_public_access_block(AccountId=account_id), {})[0] or {}).get('PublicAccessBlockConfiguration', {})
+              g['s3'] = {'buckets': detailed, 'accountBpa': account_bpa, 'truncated': False}
+
+              cf = cli('cloudfront', creds, 'us-east-1')
+              dists = []
               try:
-                  pg=tag.get_paginator('get_resources').paginate(PaginationConfig={'MaxItems':500,'PageSize':100})
-                  for p in pg:
-                      for m in p.get('ResourceTagMappingList',[]):
-                          arn=m.get('ResourceARN','');svc=arn.split(':')[2] if arn.startswith('arn:') and len(arn.split(':'))>2 else 'other';counts[svc]=counts.get(svc,0)+1
-                          if len(arns)<300:arns.append(arn)
-              except Exception as e:a['errors']['tagInventory']=str(e)
-              a['inventory']={'taggedServiceCounts':counts,'taggedResourceArns':arns,'note':'Tagging API inventory includes tagged resources only; service-specific collectors cover key untagged architecture resources.'}
-              return a
-          def snapshot(c):
-              out={'region':REGION,'errors':{}}
-              ident,_=safe(lambda:cli('sts',c).get_caller_identity(),{});aid=(ident or {}).get('Account');out['account']=aid
-              ec2=cli('ec2',c);ed={'defaultSecurityGroups':[],'adminOpen':[],'vpcsWithoutFlowLogs':[],'unencryptedVolumes':[]}
-              vpcs,_=safe(lambda:ec2.describe_vpcs().get('Vpcs',[]),[]);sgs,_=safe(lambda:ec2.describe_security_groups().get('SecurityGroups',[]),[]);ed['vpcCount']=len(vpcs or [])
-              cache={}
-              def enis(g):
-                  if g not in cache:cache[g]=(safe(lambda:ec2.describe_network_interfaces(Filters=[{'Name':'group-id','Values':[g]}]).get('NetworkInterfaces',[]),[])[0] or [])
-                  return cache[g]
-              for sg in sgs or []:
-                  gid=sg.get('GroupId')
-                  if sg.get('GroupName')=='default':
-                      en=enis(gid);ed['defaultSecurityGroups'].append({'groupId':gid,'vpcId':sg.get('VpcId'),'ruleCount':len(sg.get('IpPermissions',[]))+len(sg.get('IpPermissionsEgress',[])),'enis':[{'id':x.get('NetworkInterfaceId'),'type':x.get('InterfaceType'),'description':x.get('Description')} for x in en[:10]]})
-                  ports=[]
-                  for p in sg.get('IpPermissions',[]):
-                      pub=any(x.get('CidrIp')=='0.0.0.0/0' for x in p.get('IpRanges',[])) or any(x.get('CidrIpv6')=='::/0' for x in p.get('Ipv6Ranges',[]))
-                      if not pub:continue
-                      if p.get('IpProtocol')=='-1':ports += [22,3389]
-                      elif p.get('FromPort') is not None:ports += [z for z in (22,3389) if p['FromPort']<=z<=p['ToPort']]
-                  ports=sorted(set(ports))
-                  if ports:ed['adminOpen'].append({'groupId':gid,'name':sg.get('GroupName'),'ports':ports,'eniCount':len(enis(gid))})
-              fl,_=safe(lambda:ec2.describe_flow_logs().get('FlowLogs',[]),[]);active={x.get('ResourceId') for x in fl or [] if x.get('FlowLogStatus')=='ACTIVE'};ed['vpcsWithoutFlowLogs']=[v.get('VpcId') for v in vpcs or [] if v.get('VpcId') not in active]
-              ed['ebsEncryptionDefault']=safe(lambda:ec2.get_ebs_encryption_by_default().get('EbsEncryptionByDefault'),None)[0]
-              vols,_=safe(lambda:ec2.describe_volumes().get('Volumes',[]),[]);ed['unencryptedVolumes']=[{'id':v.get('VolumeId'),'size':v.get('Size')} for v in vols or [] if not v.get('Encrypted')][:30];out['ec2']=ed
-              rds=cli('rds',c);dbs,_=safe(lambda:rds.describe_db_instances().get('DBInstances',[]),[]);out['rds']={'instances':[{'id':d.get('DBInstanceIdentifier'),'class':d.get('DBInstanceClass'),'engine':d.get('Engine'),'version':d.get('EngineVersion'),'storage':d.get('AllocatedStorage'),'multiAZ':d.get('MultiAZ'),'autoMinor':d.get('AutoMinorVersionUpgrade'),'publiclyAccessible':d.get('PubliclyAccessible'),'encrypted':d.get('StorageEncrypted')} for d in dbs or []]}
-              s3=cli('s3',c);ct=cli('cloudtrail',c);trails,_=safe(lambda:ct.describe_trails(includeShadowTrails=False).get('trailList',[]),[]);tl=[]
-              for t in trails or []:
-                  st,_=safe(lambda a=t.get('TrailARN'):ct.get_trail_status(Name=a),{});b=t.get('S3BucketName');lg={}
-                  if b:lg=safe(lambda b=b:s3.get_bucket_logging(Bucket=b),{})[0] or {}
-                  tl.append({'name':t.get('Name'),'kmsKeyId':t.get('KmsKeyId'),'cloudWatchLogs':bool(t.get('CloudWatchLogsLogGroupArn')),'s3Bucket':b,'s3AccessLogging':bool(lg.get('LoggingEnabled')) if b else None,'logFileValidation':bool(t.get('LogFileValidationEnabled')),'isLogging':bool((st or {}).get('IsLogging'))})
-              out['cloudtrail']={'trails':tl}
-              buckets,_=safe(lambda:s3.list_buckets().get('Buckets',[]),[]);bl=[]
-              for b in (buckets or [])[:40]:
-                  n=b.get('Name');pol,_=safe(lambda n=n:s3.get_bucket_policy(Bucket=n),{});ps,_=safe(lambda n=n:s3.get_bucket_policy_status(Bucket=n),{});bp,_=safe(lambda n=n:s3.get_bucket_public_access_block(Bucket=n),{})
-                  bl.append({'name':n,'sslEnforced':ssl_deny((pol or {}).get('Policy','')),'public':((ps or {}).get('PolicyStatus') or {}).get('IsPublic'),'bpa':(bp or {}).get('PublicAccessBlockConfiguration',{})})
-              ab={}
-              if aid:ab=safe(lambda:cli('s3control',c).get_public_access_block(AccountId=aid),{})[0] or {}
-              out['s3']={'buckets':bl,'accountBpa':ab.get('PublicAccessBlockConfiguration',{}),'truncated':len(buckets or [])>40}
-              iam=cli('iam',c);sm,_=safe(lambda:iam.get_account_summary().get('SummaryMap',{}),{});users,_=safe(lambda:iam.list_users().get('Users',[]),[]);old=[];now=datetime.datetime.now(datetime.timezone.utc)
-              for u in (users or [])[:100]:
-                  keys,_=safe(lambda n=u['UserName']:iam.list_access_keys(UserName=n).get('AccessKeyMetadata',[]),[])
+                  for p in cf.get_paginator('list_distributions').paginate():
+                      dists.extend(((p.get('DistributionList') or {}).get('Items') or []))
+              except Exception as e:
+                  g['errors']['cloudfront'] = str(e)
+              g['cloudfront'] = [{'id': d.get('Id'), 'domain': d.get('DomainName'), 'enabled': d.get('Enabled'), 'webAclId': d.get('WebACLId'), 'origins': [{'id': o.get('Id'), 'domain': o.get('DomainName')} for o in ((d.get('Origins') or {}).get('Items') or [])]} for d in dists]
+
+              r53 = cli('route53', creds, 'us-east-1')
+              zones, e = safe(lambda: collect(r53, 'list_hosted_zones', 'HostedZones'), [])
+              g['errors']['route53'] = e
+              g['route53'] = [{'id': z.get('Id'), 'name': z.get('Name'), 'private': (z.get('Config') or {}).get('PrivateZone')} for z in zones or []]
+
+              iam = cli('iam', creds, 'us-east-1')
+              summary, _ = safe(lambda: iam.get_account_summary().get('SummaryMap', {}), {})
+              users, e = safe(lambda: collect(iam, 'list_users', 'Users'), [])
+              g['errors']['iamUsers'] = e
+              old = []
+              now = datetime.datetime.now(datetime.timezone.utc)
+              for u in users or []:
+                  keys, _ = safe(lambda n=u.get('UserName'): iam.list_access_keys(UserName=n).get('AccessKeyMetadata', []), [])
                   for k in keys or []:
-                      age=(now-k['CreateDate']).days
-                      if age>90:old.append({'user':u['UserName'],'last4':k['AccessKeyId'][-4:],'ageDays':age,'status':k.get('Status')})
-              ans,_=safe(lambda:cli('accessanalyzer',c).list_analyzers().get('analyzers',[]),[]);out['iam']={'accountMfa':bool((sm or {}).get('AccountMFAEnabled')),'rootAccessKeys':bool((sm or {}).get('AccountAccessKeysPresent')),'userCount':len(users or []),'oldAccessKeys':old[:40],'analyzers':[{'name':a.get('name'),'type':a.get('type'),'status':a.get('status')} for a in ans or []]}
-              ac,_=safe(lambda:cli('account',c,'us-east-1').get_alternate_contact(AlternateContactType='SECURITY'),{});out['accountData']={'securityContact':bool((ac or {}).get('AlternateContact'))}
-              out['topology']=architecture(c,out)
+                      age = (now - k['CreateDate']).days
+                      if age > 90:
+                          old.append({'user': u.get('UserName'), 'last4': k.get('AccessKeyId', '')[-4:], 'ageDays': age, 'status': k.get('Status')})
+              g['iam'] = {'accountMfa': bool((summary or {}).get('AccountMFAEnabled')), 'rootAccessKeys': bool((summary or {}).get('AccountAccessKeysPresent')), 'userCount': len(users or []), 'oldAccessKeys': old}
+
+              contact, _ = safe(lambda: cli('account', creds, 'us-east-1').get_alternate_contact(AlternateContactType='SECURITY'), {})
+              g['accountData'] = {'securityContact': bool((contact or {}).get('AlternateContact'))}
+              return g
+
+          def regional_inventory(creds, region):
+              out = {'region': region, 'errors': {}}
+              ec2 = cli('ec2', creds, region)
+              vpcs, e = safe(lambda: collect(ec2, 'describe_vpcs', 'Vpcs'), []); out['errors']['vpcs'] = e
+              subnets, e = safe(lambda: collect(ec2, 'describe_subnets', 'Subnets'), []); out['errors']['subnets'] = e
+              sgs, e = safe(lambda: collect(ec2, 'describe_security_groups', 'SecurityGroups'), []); out['errors']['securityGroups'] = e
+              enis, e = safe(lambda: collect(ec2, 'describe_network_interfaces', 'NetworkInterfaces'), []); out['errors']['networkInterfaces'] = e
+              instances, e = safe(lambda: ec2_instances(ec2), []); out['errors']['instances'] = e
+              routes, _ = safe(lambda: collect(ec2, 'describe_route_tables', 'RouteTables'), [])
+              igws, _ = safe(lambda: collect(ec2, 'describe_internet_gateways', 'InternetGateways'), [])
+              nats, _ = safe(lambda: collect(ec2, 'describe_nat_gateways', 'NatGateways'), [])
+              endpoints, _ = safe(lambda: collect(ec2, 'describe_vpc_endpoints', 'VpcEndpoints'), [])
+              flow, _ = safe(lambda: collect(ec2, 'describe_flow_logs', 'FlowLogs'), [])
+              vols, _ = safe(lambda: collect(ec2, 'describe_volumes', 'Volumes'), [])
+
+              eni_by_sg = {}
+              for eni in enis or []:
+                  for g in eni.get('Groups', []):
+                      eni_by_sg.setdefault(g.get('GroupId'), []).append(eni)
+
+              default_groups = []
+              admin_open = []
+              for sg in sgs or []:
+                  gid = sg.get('GroupId')
+                  attached = eni_by_sg.get(gid, [])
+                  if sg.get('GroupName') == 'default':
+                      default_groups.append({'groupId': gid, 'vpcId': sg.get('VpcId'), 'ruleCount': len(sg.get('IpPermissions', [])) + len(sg.get('IpPermissionsEgress', [])), 'enis': [{'id': x.get('NetworkInterfaceId'), 'type': x.get('InterfaceType'), 'description': x.get('Description')} for x in attached]})
+                  ports = []
+                  for p in sg.get('IpPermissions', []):
+                      public = any(x.get('CidrIp') == '0.0.0.0/0' for x in p.get('IpRanges', [])) or any(x.get('CidrIpv6') == '::/0' for x in p.get('Ipv6Ranges', []))
+                      if not public:
+                          continue
+                      if p.get('IpProtocol') == '-1':
+                          ports += [22, 3389]
+                      elif p.get('FromPort') is not None:
+                          ports += [z for z in (22, 3389) if p['FromPort'] <= z <= p['ToPort']]
+                  if ports:
+                      admin_open.append({'groupId': gid, 'name': sg.get('GroupName'), 'ports': sorted(set(ports)), 'eniCount': len(attached), 'region': region})
+
+              active_flow = {x.get('ResourceId') for x in flow or [] if x.get('FlowLogStatus') == 'ACTIVE'}
+              ec2_data = {
+                  'region': region,
+                  'vpcCount': len(vpcs or []),
+                  'defaultSecurityGroups': default_groups,
+                  'adminOpen': admin_open,
+                  'vpcsWithoutFlowLogs': [v.get('VpcId') for v in vpcs or [] if v.get('VpcId') not in active_flow],
+                  'ebsEncryptionDefault': safe(lambda: ec2.get_ebs_encryption_by_default().get('EbsEncryptionByDefault'), None)[0],
+                  'unencryptedVolumes': [{'id': v.get('VolumeId'), 'size': v.get('Size'), 'region': region} for v in vols or [] if not v.get('Encrypted')]
+              }
+              out['ec2'] = ec2_data
+
+              rds = cli('rds', creds, region)
+              dbs, e = safe(lambda: collect(rds, 'describe_db_instances', 'DBInstances'), []); out['errors']['rds'] = e
+              out['rds'] = {'instances': [{'id': d.get('DBInstanceIdentifier'), 'class': d.get('DBInstanceClass'), 'engine': d.get('Engine'), 'version': d.get('EngineVersion'), 'storage': d.get('AllocatedStorage'), 'multiAZ': d.get('MultiAZ'), 'autoMinor': d.get('AutoMinorVersionUpgrade'), 'publiclyAccessible': d.get('PubliclyAccessible'), 'encrypted': d.get('StorageEncrypted'), 'region': region} for d in dbs or []]}
+
+              ct = cli('cloudtrail', creds, region)
+              trails, e = safe(lambda: ct.describe_trails(includeShadowTrails=False).get('trailList', []), []); out['errors']['cloudtrail'] = e
+              trail_rows = []
+              s3 = cli('s3', creds, region)
+              for t in trails or []:
+                  status, _ = safe(lambda arn=t.get('TrailARN'): ct.get_trail_status(Name=arn), {})
+                  bucket = t.get('S3BucketName'); logging = {}
+                  if bucket:
+                      logging = safe(lambda b=bucket: s3.get_bucket_logging(Bucket=b), {})[0] or {}
+                  trail_rows.append({'name': t.get('Name'), 'kmsKeyId': t.get('KmsKeyId'), 'cloudWatchLogs': bool(t.get('CloudWatchLogsLogGroupArn')), 's3Bucket': bucket, 's3AccessLogging': bool(logging.get('LoggingEnabled')) if bucket else None, 'logFileValidation': bool(t.get('LogFileValidationEnabled')), 'isLogging': bool((status or {}).get('IsLogging')), 'region': region})
+              out['cloudtrail'] = {'trails': trail_rows}
+
+              analyzer, _ = safe(lambda: collect(cli('accessanalyzer', creds, region), 'list_analyzers', 'analyzers'), [])
+              out['accessAnalyzers'] = [{'name': a.get('name'), 'type': a.get('type'), 'status': a.get('status'), 'region': region} for a in analyzer or []]
+
+              elb = cli('elbv2', creds, region)
+              lbs, _ = safe(lambda: collect(elb, 'describe_load_balancers', 'LoadBalancers'), [])
+              tgs, _ = safe(lambda: collect(elb, 'describe_target_groups', 'TargetGroups'), [])
+              tg_rows = []
+              for t in tgs or []:
+                  health, _ = safe(lambda arn=t.get('TargetGroupArn'): elb.describe_target_health(TargetGroupArn=arn).get('TargetHealthDescriptions', []), [])
+                  tg_rows.append({'arn': t.get('TargetGroupArn'), 'name': t.get('TargetGroupName'), 'vpcId': t.get('VpcId'), 'protocol': t.get('Protocol'), 'port': t.get('Port'), 'targetType': t.get('TargetType'), 'loadBalancerArns': t.get('LoadBalancerArns', []), 'targets': [{'id': x.get('Target', {}).get('Id'), 'port': x.get('Target', {}).get('Port'), 'state': x.get('TargetHealth', {}).get('State')} for x in health or []], 'region': region})
+
+              asc = cli('autoscaling', creds, region)
+              asgs, _ = safe(lambda: collect(asc, 'describe_auto_scaling_groups', 'AutoScalingGroups'), [])
+              lamb = cli('lambda', creds, region)
+              funcs, _ = safe(lambda: collect(lamb, 'list_functions', 'Functions'), [])
+              cache = cli('elasticache', creds, region)
+              caches, _ = safe(lambda: collect(cache, 'describe_cache_clusters', 'CacheClusters'), [])
+              efs = cli('efs', creds, region)
+              fss, _ = safe(lambda: collect(efs, 'describe_file_systems', 'FileSystems'), [])
+              ddb = cli('dynamodb', creds, region)
+              tables, _ = safe(lambda: collect(ddb, 'list_tables', 'TableNames'), [])
+              ecs = cli('ecs', creds, region)
+              ecs_clusters, _ = safe(lambda: collect(ecs, 'list_clusters', 'clusterArns'), [])
+              eks = cli('eks', creds, region)
+              eks_clusters, _ = safe(lambda: collect(eks, 'list_clusters', 'clusters'), [])
+
+              topo = {
+                  'coverage': 'architecture-metadata-v2-paginated', 'region': region,
+                  'vpcs': [{'id': v.get('VpcId'), 'cidr': v.get('CidrBlock'), 'name': name_tag(v.get('Tags')), 'default': v.get('IsDefault'), 'region': region} for v in vpcs or []],
+                  'subnets': [{'id': s.get('SubnetId'), 'vpcId': s.get('VpcId'), 'cidr': s.get('CidrBlock'), 'az': s.get('AvailabilityZone'), 'name': name_tag(s.get('Tags')), 'publicIpOnLaunch': s.get('MapPublicIpOnLaunch'), 'region': region} for s in subnets or []],
+                  'routeTables': [{'id': r.get('RouteTableId'), 'vpcId': r.get('VpcId'), 'associations': r.get('Associations', []), 'routes': r.get('Routes', []), 'region': region} for r in routes or []],
+                  'instances': [{'id': i.get('InstanceId'), 'name': name_tag(i.get('Tags')), 'type': i.get('InstanceType'), 'state': (i.get('State') or {}).get('Name'), 'vpcId': i.get('VpcId'), 'subnetId': i.get('SubnetId'), 'privateIp': i.get('PrivateIpAddress'), 'publicIp': i.get('PublicIpAddress'), 'securityGroups': [x.get('GroupId') for x in i.get('SecurityGroups', [])], 'region': region} for i in instances or []],
+                  'internetGateways': [{'id': g.get('InternetGatewayId'), 'vpcIds': [x.get('VpcId') for x in g.get('Attachments', []) if x.get('State') == 'available'], 'region': region} for g in igws or []],
+                  'natGateways': [{'id': n.get('NatGatewayId'), 'vpcId': n.get('VpcId'), 'subnetId': n.get('SubnetId'), 'state': n.get('State'), 'publicIps': [x.get('PublicIp') for x in n.get('NatGatewayAddresses', []) if x.get('PublicIp')], 'region': region} for n in nats or []],
+                  'vpcEndpoints': [{'id': x.get('VpcEndpointId'), 'vpcId': x.get('VpcId'), 'serviceName': x.get('ServiceName'), 'type': x.get('VpcEndpointType'), 'subnetIds': x.get('SubnetIds', []), 'region': region} for x in endpoints or []],
+                  'loadBalancers': [{'arn': l.get('LoadBalancerArn'), 'name': l.get('LoadBalancerName'), 'type': l.get('Type'), 'scheme': l.get('Scheme'), 'vpcId': l.get('VpcId'), 'dns': l.get('DNSName'), 'subnetIds': [z.get('SubnetId') for z in (l.get('AvailabilityZones') or [])], 'securityGroups': l.get('SecurityGroups', []), 'region': region} for l in lbs or []],
+                  'targetGroups': tg_rows,
+                  'autoScalingGroups': [{'name': g.get('AutoScalingGroupName'), 'min': g.get('MinSize'), 'max': g.get('MaxSize'), 'desired': g.get('DesiredCapacity'), 'instanceIds': [x.get('InstanceId') for x in g.get('Instances', [])], 'targetGroupArns': g.get('TargetGroupARNs', []), 'region': region} for g in asgs or []],
+                  'rds': [{'id': d.get('DBInstanceIdentifier'), 'engine': d.get('Engine'), 'class': d.get('DBInstanceClass'), 'multiAZ': d.get('MultiAZ'), 'vpcId': (d.get('DBSubnetGroup') or {}).get('VpcId'), 'subnetIds': [x.get('SubnetIdentifier') for x in ((d.get('DBSubnetGroup') or {}).get('Subnets') or [])], 'securityGroups': [x.get('VpcSecurityGroupId') for x in d.get('VpcSecurityGroups', [])], 'endpoint': (d.get('Endpoint') or {}).get('Address'), 'region': region} for d in dbs or []],
+                  'lambda': [{'name': f.get('FunctionName'), 'runtime': f.get('Runtime'), 'vpcId': (f.get('VpcConfig') or {}).get('VpcId'), 'subnetIds': (f.get('VpcConfig') or {}).get('SubnetIds', []), 'securityGroups': (f.get('VpcConfig') or {}).get('SecurityGroupIds', []), 'region': region} for f in funcs or []],
+                  'elasticache': [{'id': x.get('CacheClusterId'), 'engine': x.get('Engine'), 'subnetGroup': x.get('CacheSubnetGroupName'), 'region': region} for x in caches or []],
+                  'efs': [{'id': x.get('FileSystemId'), 'name': x.get('Name'), 'region': region} for x in fss or []],
+                  'dynamodb': [{'name': x, 'region': region} for x in tables or []],
+                  'ecs': [{'arn': x, 'name': x.rsplit('/', 1)[-1], 'region': region} for x in ecs_clusters or []],
+                  'eks': [{'name': x, 'region': region} for x in eks_clusters or []]
+              }
+              out['topology'] = topo
               return out
-          def findings(c):
-              sh=cli('securityhub',c);out=[]
-              pg=sh.get_paginator('get_findings').paginate(Filters={'ComplianceStatus':[{'Value':'FAILED','Comparison':'EQUALS'}],'RecordState':[{'Value':'ACTIVE','Comparison':'EQUALS'}]},PaginationConfig={'MaxItems':100})
+
+          def snapshot(creds, region, include_global=True):
+              ident, _ = safe(lambda: cli('sts', creds, region).get_caller_identity(), {})
+              account_id = (ident or {}).get('Account')
+              reg = regional_inventory(creds, region)
+              out = {'account': account_id, 'region': region, 'errors': reg.get('errors', {}), 'ec2': reg.get('ec2', {}), 'rds': reg.get('rds', {}), 'cloudtrail': reg.get('cloudtrail', {}), 'topology': reg.get('topology', {})}
+              out['iam'] = {'analyzers': reg.get('accessAnalyzers', [])}
+              if include_global:
+                  glob = global_inventory(creds, account_id)
+                  out['s3'] = glob.get('s3', {})
+                  out['accountData'] = glob.get('accountData', {})
+                  out['iam'].update(glob.get('iam', {}))
+                  out['topology']['s3'] = [{'name': b.get('name'), 'public': b.get('public')} for b in out['s3'].get('buckets', [])]
+                  out['topology']['cloudfront'] = glob.get('cloudfront', [])
+                  out['topology']['route53'] = glob.get('route53', [])
+                  out['errors'].update({k: v for k, v in glob.get('errors', {}).items() if v})
+              else:
+                  out['s3'] = {'buckets': [], 'accountBpa': {}, 'truncated': False}
+                  out['accountData'] = {}
+              return out
+
+          def findings(creds, region):
+              sh = cli('securityhub', creds, region)
+              rows = []
+              pg = sh.get_paginator('get_findings').paginate(Filters={'ComplianceStatus': [{'Value': 'FAILED', 'Comparison': 'EQUALS'}], 'RecordState': [{'Value': 'ACTIVE', 'Comparison': 'EQUALS'}]}, PaginationConfig={'PageSize': 100})
               for p in pg:
-                  for f in p.get('Findings',[]):out.append({'id':f.get('Id'),'title':f.get('Title'),'severity':f.get('Severity',{}).get('Label'),'resources':[r.get('Id') for r in f.get('Resources',[])]})
-              return out
-          def lambda_handler(event,context):
-              if not allowed(event):return resp(403,{'message':'origin not allowed'})
+                  for f in p.get('Findings', []):
+                      rows.append({'id': f.get('Id'), 'title': f.get('Title'), 'severity': f.get('Severity', {}).get('Label'), 'resources': [r.get('Id') for r in f.get('Resources', [])]})
+              return rows
+
+          def lambda_handler(event, context):
+              if not allowed(event):
+                  return resp(403, {'message': 'origin not allowed'})
               try:
-                  p=json.loads(event.get('body') or '{}');c=assume(p['roleArn'],p.get('externalId',''))
-                  if p.get('action')=='snapshot':return resp(200,snapshot(c))
-                  return resp(200,{'findings':findings(c)})
-              except KeyError as e:return resp(400,{'message':'missing field: %s'%e})
-              except ValueError as e:return resp(400,{'message':str(e)})
-              except Exception as e:return resp(500,{'message':str(e)})
+                  p = json.loads(event.get('body') or '{}')
+                  creds = assume(p['roleArn'], p.get('externalId', ''))
+                  action = p.get('action', 'snapshot')
+                  region = p.get('region') or DEFAULT_REGION
+                  if action == 'regions':
+                      return resp(200, {'defaultRegion': DEFAULT_REGION, 'regions': region_list(creds)})
+                  if action == 'snapshot':
+                      return resp(200, snapshot(creds, region, bool(p.get('includeGlobal', True))))
+                  if action == 'findings':
+                      return resp(200, {'region': region, 'findings': findings(creds, region)})
+                  return resp(400, {'message': 'unsupported action'})
+              except KeyError as e:
+                  return resp(400, {'message': 'missing field: %s' % e})
+              except ValueError as e:
+                  return resp(400, {'message': str(e)})
+              except Exception as e:
+                  return resp(500, {'message': str(e)})
 
   SafetyCheckLogGroup:
     Type: AWS::Logs::LogGroup
@@ -250,13 +386,9 @@ Resources:
       Name: aws-safetycheck-api
       ProtocolType: HTTP
       CorsConfiguration:
-        AllowOrigins:
-          - !Ref AllowedOrigin
-        AllowHeaders:
-          - content-type
-        AllowMethods:
-          - POST
-          - OPTIONS
+        AllowOrigins: [!Ref AllowedOrigin]
+        AllowHeaders: [content-type]
+        AllowMethods: [POST, OPTIONS]
         MaxAge: 600
 
   SafetyCheckIntegration:
@@ -299,15 +431,12 @@ Outputs:
   ServiceAccountId:
     Description: Service account customers trust in customer-readonly-role.yaml.
     Value: !Ref AWS::AccountId
+  ServicePrincipalArn:
+    Description: Exact principal trusted by customer SafetyCheckReadOnlyRole.
+    Value: !GetAtt SafetyCheckLambdaRole.Arn
   DeploymentMode:
-    Description: Service deployment mode
     Value: SharedSaaS
+  InventoryMode:
+    Value: PaginatedPerRegion+GlobalMetadata
   CostGuardrails:
-    Description: Enabled cost safety defaults
-    Value: !Sub 'Logs=${LogRetentionDays}d, LambdaReservedConcurrency=${LambdaReservedConcurrency} (0=disabled), API=${ApiThrottleRate}rps burst=${ApiThrottleBurst}'
-  SecurityGuardrail:
-    Description: API limits calls to the configured browser origin and SafetyCheckReadOnlyRole + ExternalId.
-    Value: OriginRestricted+ExternalId+RoleNameRestricted
-  ArchitectureExport:
-    Description: Live snapshot includes topology metadata for draw.io export.
-    Value: AWS4DrawioSupported
+    Value: !Sub 'Logs=${LogRetentionDays}d, LambdaReservedConcurrency=${LambdaReservedConcurrency}, API=${ApiThrottleRate}rps burst=${ApiThrottleBurst}'
