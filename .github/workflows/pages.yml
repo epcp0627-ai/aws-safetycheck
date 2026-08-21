@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Enable live connector, SaaS onboarding, topology exporter, and UI enhancements
+      - name: Enable live connector, SaaS onboarding, topology exporter, browser history, and UI enhancements
         run: |
           python - <<'PY'
           from pathlib import Path
@@ -31,6 +31,7 @@ jobs:
               '<script src="./installer-guide.js"></script>',
               '<script src="./topology.js"></script>',
               '<script src="./ux.js"></script>',
+              '<script src="./browser-history.js"></script>',
               '<script src="./ui-polish.js"></script>',
               '<script src="./hero-polish.js"></script>',
           ]
