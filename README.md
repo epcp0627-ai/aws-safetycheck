@@ -34,16 +34,19 @@ SafetyCheckReadOnlyRole
 
 고객은 `infra/customer-readonly-role.yaml` **하나만** 배포합니다.
 
-가장 간단한 방법은 사이트의 **AWS에 ReadOnly Role 설치** 버튼을 이용하는 것입니다.
+사이트의 **CloudFormation 설치 시작** 버튼을 누르면 현재 External ID가 기본값으로 들어간 전용 YAML을 자동으로 내려받고 AWS CloudFormation 새 스택 화면을 엽니다.
 
 1. 사이트가 External ID를 생성합니다.
-2. CloudFormation Quick Create 화면을 엽니다.
-3. `SafetyCheckAccountId`와 `ExternalId`가 자동 입력됩니다.
-4. 스택 `aws-safetycheck-readonly`를 생성합니다.
-5. Outputs의 `RoleArn`을 사이트에 붙여넣습니다.
-6. 기본 리전 또는 활성 리전 전체를 ReadOnly로 분석합니다.
+2. 현재 External ID가 반영된 `customer-readonly-role.yaml`을 자동 다운로드합니다.
+3. CloudFormation에서 `Upload a template file`로 방금 받은 YAML을 선택합니다.
+4. 스택 이름은 `aws-safetycheck-readonly`를 사용합니다.
+5. IAM 리소스 생성 승인을 체크하고 스택을 생성합니다.
+6. Outputs의 `RoleArn`을 사이트에 붙여넣습니다.
+7. 기본 리전 또는 활성 리전 전체를 ReadOnly로 분석합니다.
 
 고객이 API Gateway/Lambda를 별도로 만들거나 Access Key/API Access Token을 브라우저에 입력할 필요가 없습니다.
+
+> AWS CloudFormation Quick Create의 `templateURL`은 Amazon S3 템플릿 URL을 요구합니다. 현재 GitHub Pages에서 템플릿을 배포하므로, 외부 URL을 억지로 Quick Create에 연결하지 않고 **전용 YAML 자동 생성 + CloudFormation 화면 바로 열기** 방식으로 구현했습니다.
 
 고객 설치 담당자를 위한 제한 정책은 `infra/customer-installer-policy.json`입니다. 이 정책은 `aws-safetycheck-readonly` 스택과 `SafetyCheckReadOnlyRole`의 설치/업데이트/삭제에 필요한 권한만 제공합니다.
 
@@ -86,7 +89,7 @@ AWS managed `ReadOnlyAccess`를 통째로 연결하지 않습니다. SafetyCheck
 - 주요 Describe/List API paginator 처리
 - 주요 AWS 아키텍처 메타데이터 인벤토리
 - draw.io `.drawio` 아키텍처 파일 생성
-- CloudFormation Quick Create 고객 온보딩
+- External ID 반영 전용 YAML 자동 생성 + CloudFormation 설치 화면 연결
 - Chrome 자체 뒤로가기/앞으로가기와 사이트 탭 히스토리 연동
 
 ## draw.io 아키텍처 출력
