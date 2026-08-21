@@ -23,12 +23,11 @@ Parameters:
     Description: AWS account where the shared AWS SafetyCheck service runs. Keep the default unless the service operator tells you otherwise.
   ExternalId:
     Type: String
-    NoEcho: true
     MinLength: 24
     MaxLength: 128
     AllowedPattern: '^[A-Za-z0-9+=,.@:_/-]+$'
     ConstraintDescription: Use 24-128 characters containing letters, numbers, and +=,.@:_/- only.
-    Description: Unique random value for this customer account. Keep it private and enter the same value in AWS SafetyCheck.
+    Description: Unique random identifier for this customer account. It is an AssumeRole binding value, not an AWS password or access key. Enter the same value in AWS SafetyCheck.
 
 Resources:
   SafetyCheckReadOnlyRole:
