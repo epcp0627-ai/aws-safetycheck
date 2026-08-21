@@ -22,6 +22,7 @@ jobs:
           p = Path('index.html')
           text = p.read_text(encoding='utf-8')
           markers = [
+              '<script src="./api-endpoint.js"></script>',
               '<script src="./live.js"></script>',
               '<script src="./report.js"></script>',
               '<script src="./live-bridge.js"></script>',
