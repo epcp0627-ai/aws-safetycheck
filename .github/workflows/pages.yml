@@ -39,6 +39,7 @@ jobs:
               '<script src="./typography.js"></script>',
               '<script src="./product-polish.js"></script>',
               '<script src="./readability-scale.js"></script>',
+              '<script src="./audit-fixes.js"></script>',
           ]
           for marker in markers:
               if marker not in text:
